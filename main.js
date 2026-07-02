@@ -1,3 +1,6 @@
+// ============================================================
+// 1. Инициализация WebGPU
+// ============================================================
 async function initWebGPU() {
 	// проверка наличия объекта navigator.gpu
 	if (!navigator.gpu) {
@@ -49,88 +52,126 @@ if (!gpu) {
 
 const { device, context, format } = gpu;
 
-/////////////////////////////////////////////////////////////////
-// шейдеры - небольшие программы, выполн. на  GPU, а не на CPU //
-/////////////////////////////////////////////////////////////////
+// ============================================================
+// 2. Генерация данных ткани (сетка NxN)
+// ============================================================
+function buildCloth(N, size) {
+    // N - количество сегментов по горизонтали и вертикали
+    // size - физический размер квадрата (например, 2.0)
+    const vertices = [];
+    const indices = []; // рёбра – пары индексов
 
-// вершинный шейдер: преобразует к-ты вершин в к-ты вершин на экране
+    const step = size / N;
+    const half = size / 2;
+
+    // 1) Вершины: (N+1) x (N+1)
+    for (let j = 0; j <= N; j++) {
+        for (let i = 0; i <= N; i++) {
+            const x = -half + i * step;
+            const y = -half + j * step;
+            vertices.push(x, y, 0.0);
+        }
+    }
+
+    // Функция для получения индекса вершины по (i, j)
+    const idx = (i, j) => j * (N + 1) + i;
+
+    // 2) Рёбра: горизонтальные и вертикальные
+    // Горизонтальные (i от 0 до N-1, j от 0 до N)
+    for (let j = 0; j <= N; j++) {
+        for (let i = 0; i < N; i++) {
+            const a = idx(i, j);
+            const b = idx(i + 1, j);
+            indices.push(a, b);
+        }
+    }
+    // Вертикальные (i от 0 до N, j от 0 до N-1)
+    for (let j = 0; j < N; j++) {
+        for (let i = 0; i <= N; i++) {
+            const a = idx(i, j);
+            const b = idx(i, j + 1);
+            indices.push(a, b);
+        }
+    }
+
+    return {
+        vertices: new Float32Array(vertices),
+        indices: new Uint32Array(indices), // используем 32-битные индексы
+        numVertices: (N + 1) * (N + 1),
+        numEdges: indices.length / 2,
+    };
+}
+
+// Параметры ткани
+const N = 20;          // количество сегментов (20x20 = 400 квадратов)
+const size = 2.0;      // размер квадрата в глобальных координатах
+const cloth = buildCloth(N, size);
+
+// ============================================================
+// 3. Буферы для ткани
+// ============================================================
+// Вершинный буфер
+
+const vertexBuffer = device.createBuffer({
+    size: cloth.vertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+});
+// 0 - смещение в байтах, cloth.vertices – это Float32Array (для вершин) или Uint32Array (для индексов)
+device.queue.writeBuffer(vertexBuffer, 0, cloth.vertices);
+
+// Индексный буфер (рёбра)
+const indexBuffer = device.createBuffer({
+    size: cloth.indices.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+});
+device.queue.writeBuffer(indexBuffer, 0, cloth.indices);
+
+// ============================================================
+// 4. Шейдеры
+// ============================================================
 const vertexShaderCode = `
 @vertex
-// ф-ия vs_main берёт 3 вещ. числа и преобр. в 4мерный в-ор clip-space
 fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
-	return vec4<f32>(pos, 1.0);
+    return vec4<f32>(pos, 1.0);
 }
 `;
 
-// фрагментный шейдер: опр. цвет каждого пикселя
 const fragmentShaderCode = `
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-	return vec4<f32>(0.0, 0.8, 0.8, 1.0); // цвет
+    return vec4<f32>(0.8, 0.8, 0.8, 1.0); // Светло-серые линии
 }
 `;
 
-/////////////////////////
-// данные треугольника //
-/////////////////////////
-
-// к-ты вершин на отрезке [-1, 1]
-const vertices = new Float32Array([
-	-0.5, -0.5, 0.0,
-	0.5, -0.5, 0.0,
-	0.0, 0.5, 0.0
-])
-
-// буфер для хранения вершин на GPU
-const vertexBuffer = device.createBuffer({
-	size: vertices.byteLength,
-	// флаги для использования
-	// вершинный буфер | копирование данных из CPU в этот буфер
-	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(vertexBuffer, 0, vertices);
-
-// индексы (порядок отрисовки вершин)
-const indices = new Uint32Array([0, 1, 2]); // соединяем вершины 1, 2, 3
-const indexBuffer = device.createBuffer({
-	size: indices.byteLength,
-	usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-});
-// копируем данные (массив vertices) из CPU в GPU (начинаем с 0 позиции)
-device.queue.writeBuffer(indexBuffer, 0, indices);
-
-/////////////////////////////////////////////////
-// пайплайн рендеринга - настраиваем рисование //
-/////////////////////////////////////////////////
-
+// ============================================================
+// 5. Пайплайн рендеринга (теперь line-list)
+// ============================================================
 const pipeline = device.createRenderPipeline({
-	layout: 'auto',
-	// настройки вершинного шейдера
-	vertex: {
-		module: device.createShaderModule({ code: vertexShaderCode}),
-		entryPoint: 'vs_main',
-		// описываем, как читать вершинный буфер
-		buffers: [
-			{
-				arrayStride: 3 * 4, // 3 float по 4 байта, шаг между верш в байтах
-				attributes: [
-					{
-						shaderLocation: 0, // соответствует @location(0) в шейдере
-						offset: 0,
-						format: 'float32x3',
-					},
-				],
-			},
-		],
-	},
-	fragment: {
-		module: device.createShaderModule({ code: fragmentShaderCode }),
-		entryPoint: 'fs_main',
-		targets: [{ format }],
-	},
-	primitive: {
-		topology: 'triangle-list',
-	},
+    layout: 'auto',
+    vertex: {
+        module: device.createShaderModule({ code: vertexShaderCode }),
+        entryPoint: 'vs_main',
+        buffers: [
+            {
+                arrayStride: 3 * 4, // 3 float по 4 байта
+                attributes: [
+                    {
+                        shaderLocation: 0,
+                        offset: 0,
+                        format: 'float32x3',
+                    },
+                ],
+            },
+        ],
+    },
+    fragment: {
+        module: device.createShaderModule({ code: fragmentShaderCode }),
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+    },
+    primitive: {
+        topology: 'line-list', // Рисуем линии (каждые 2 индекса – отрезок)
+    },
 });
 
 
@@ -157,10 +198,13 @@ function frame() {
 	});
 
 	// выполняем рисование
+	// устанавливаем текущий пайплайн рендеринга со всеми настройками
 	renderPass.setPipeline(pipeline);
+	// привязывакм буферы
 	renderPass.setVertexBuffer(0, vertexBuffer);
 	renderPass.setIndexBuffer(indexBuffer, 'uint32');
-	renderPass.drawIndexed(3);
+	// Рисуем все рёбра: количество индексов = cloth.indices.length
+	renderPass.drawIndexed(cloth.indices.length);
 
 	renderPass.end();
 
