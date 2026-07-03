@@ -268,6 +268,59 @@ const pipeline = device.createRenderPipeline({
     },
 });
 
+// ============================================================
+// COMPUTE-ШЕЙДЕР
+// ============================================================
+
+const computeShaderCode = `
+// Объявляем буфер вершин как массив трёхмерных векторов.
+// Доступ: чтение и запись (read_write).
+@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+
+// Главная функция compute-шейдера.
+// @workgroup_size(64): в каждой группе 64 потока.
+// global_invocation_id: индекс текущего потока (x, y, z).
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    // Берём индекс вершины из первой компоненты id.
+    let i = id.x;
+
+    // Проверяем, не выходит ли индекс за пределы массива.
+    if (i >= arrayLength(&vertices)) {
+        return;
+    }
+
+    // Читаем позицию вершины из буфера.
+    let pos = vertices[i];
+
+    // И сразу записываем её же обратно (без изменений).
+    vertices[i] = pos;
+}
+`;
+
+// Создаём модуль шейдера из строки кода
+const computeModule = device.createShaderModule({ code: computeShaderCode });
+
+// Создаём compute-пайплайн
+const computePipeline = device.createComputePipeline({
+    layout: 'auto', // автоматически определить layout по коду шейдера
+    compute: {
+        module: computeModule,
+        entryPoint: 'main', // имя функции, с которой начинается выполнение
+    },
+});
+
+// Создаём bind group для привязки буфера к шейдеру
+// соединяем буферы на GPU и слоты в шейдере
+const bindGroup = device.createBindGroup({
+    layout: computePipeline.getBindGroupLayout(0), // берём layout для группы 0
+    entries: [
+        {
+            binding: 0, // соответствует @binding(0) в шейдере
+            resource: { buffer: vertexBuffer }, // наш существующий вершинный буфер
+        },
+    ],
+});
 
 // ============================================================
 // 7. Цикл анимации (пока только рендеринг)
@@ -277,6 +330,20 @@ function frame() {
     // Пока просто рисую статичную сетку.
 
     const encoder = device.createCommandEncoder();
+
+    // =========== COMPUTE-ПРОХОД ===========
+    const computePass = encoder.beginComputePass();
+    computePass.setPipeline(computePipeline);
+    computePass.setBindGroup(0, bindGroup);  // привязывает bind group к группе 0 (соответствует @group(0) в шейдере)
+
+    // Рассчитываем количество рабочих групп: нужно покрыть все вершины.
+    // В каждой группе 64 потока, поэтому групп = ceil(numVertices / 64).
+    const workgroupCount = Math.ceil(cloth.numVertices / 64);
+    computePass.dispatchWorkgroups(workgroupCount);
+
+    computePass.end();
+    // ======================================
+
     const textureView = context.getCurrentTexture().createView();
     const renderPass = encoder.beginRenderPass({
         colorAttachments: [
