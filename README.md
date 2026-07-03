@@ -15,7 +15,7 @@
 </p>
 
 <h2>Запуск</h2>
-<p>Для работы необходим браузер с поддержкой WebGPU (рекомендуется <strong>Chrome Canary</strong> с включёнными флагами <code>#enable-unsafe-webgpu</code>).</p>
+<p>Для работы необходим браузер с поддержкой WebGPU (я использую <strong>Chrome Canary</strong> с включёнными флагами <code>#enable-unsafe-webgpu</code>).</p>
 <ol>
   <li>Клонируйте репозиторий:
     <pre>git clone https://github.com/g30613740/cloth_sim.git</pre>
@@ -30,7 +30,8 @@
   <li><input type="checkbox" checked disabled> Инициализация WebGPU</li>
   <li><input type="checkbox" checked disabled> Отрисовка треугольника (проверка)</li>
   <li><input type="checkbox" checked disabled> Генерация сетки ткани (каркас)</li>
-  <li><input type="checkbox" disabled> Симуляция PBD (compute-шейдер)</li>
+  <li><input type="checkbox" checked disabled> Подготовка буферов для симуляции (prevPos, edgeData, uniform)</li>
+  <li><input type="checkbox" disabled> Реализация compute-шейдера (PBD)</li>
   <li><input type="checkbox" disabled> Управление гравитацией</li>
   <li><input type="checkbox" disabled> Анимация центральной вершины</li>
 </ul>
