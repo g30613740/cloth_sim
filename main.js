@@ -277,6 +277,17 @@ const computeShaderCode = `
 // Доступ: чтение и запись (read_write).
 @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
 
+// Буфер предыдущих позиций: чтение/запись
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+
+// Uniform-буфер с параметрами (одинак для всех потоков)
+struct Uniforms {
+    dt: f32,             // шаг по времени
+    gravity: f32,
+    enableGravity: f32,  // флаг: вкл/выкл гравитация
+};
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
 // Главная функция compute-шейдера.
 // @workgroup_size(64): в каждой группе 64 потока.
 // global_invocation_id: индекс текущего потока (x, y, z).
@@ -290,13 +301,49 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    // Читаем позицию вершины из буфера.
+    // Читаем текущую и предыдущую позицию
     let pos = vertices[i];
+    let prev = prevPositions[i];
 
-    // И сразу записываем её же обратно (без изменений).
-    vertices[i] = pos;
+    // Вычисляем ускорение (гравитация, если включена)
+    var accel = vec3<f32>(0.0, 0.0, 0.0);
+    if (uniforms.enableGravity > 0.5) {
+        accel.y = -uniforms.gravity;
+    }
+
+    // Verlet-интеграция: newPos = 2*pos - prev + accel * dt^2
+    let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+
+    // Обновляем буферы
+    prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
+    vertices[i] = newPos;          // записываем новую позицию
 }
 `;
+
+// // отладка для проверки движения сетки
+// const computeShaderCode = `
+// @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+// @group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+// struct Uniforms {
+//     dt: f32,
+//     gravity: f32,
+//     enableGravity: f32,
+// };
+
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let i = id.x;
+//     if (i >= arrayLength(&vertices)) { return; }
+
+//     // Принудительно сдвигаем все вершины по Y на 0.1 за кадр
+//     let pos = vertices[i];
+//     let newPos = pos + vec3<f32>(0.0, 0.1, 0.0);
+//     vertices[i] = newPos;
+// }
+// `;
+
 
 // Создаём модуль шейдера из строки кода
 const computeModule = device.createShaderModule({ code: computeShaderCode });
@@ -315,19 +362,40 @@ const computePipeline = device.createComputePipeline({
 const bindGroup = device.createBindGroup({
     layout: computePipeline.getBindGroupLayout(0), // берём layout для группы 0
     entries: [
-        {
-            binding: 0, // соответствует @binding(0) в шейдере
-            resource: { buffer: vertexBuffer }, // наш существующий вершинный буфер
-        },
+        // Порядок соответствует @binding в шейдере
+        { binding: 0, resource: { buffer: vertexBuffer } },
+        { binding: 1, resource: { buffer: prevPosBuffer } },
+        { binding: 2, resource: { buffer: uniformBuffer } },
     ],
 });
+
+// // отладка для проверки движения сетки
+// const bindGroup = device.createBindGroup({
+//     layout: computePipeline.getBindGroupLayout(0),
+//     entries: [
+//         { binding: 0, resource: { buffer: vertexBuffer } },
+//     ],
+// });
 
 // ============================================================
 // 7. Цикл анимации (пока только рендеринг)
 // ============================================================
 function frame() {
-    // Здесь позже будет обновление uniform-буфера (time) и вызов compute-проходов
-    // Пока просто рисую статичную сетку.
+    // console.log('frame called');
+
+    // Обновляем uniform-буфер
+    const time = performance.now() / 1000; // текущее время в секундах (пока не используется)
+    const gravityCheck = document.getElementById('gravityCheck');
+    const enableGravity = gravityCheck.checked ? 1 : 0;
+
+    // В начале файла у нас есть объявление uniformData:
+    // const uniformData = new Float32Array([0.016, 9.8, 0.0, 5.0, 1.0, ...]);
+
+    // Внутри frame() обновляем только нужные поля (сначала я думал создавать копию):
+    uniformData[2] = time;                   // время
+    uniformData[4] = gravityCheck.checked ? 1 : 0; // enableGravity (индекс 4, если помните)
+    // console.log('enableGravity =', enableGravity, 'time =', time);
+    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
     const encoder = device.createCommandEncoder();
 
