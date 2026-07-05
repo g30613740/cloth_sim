@@ -199,22 +199,22 @@ device.queue.writeBuffer(edgeBuffer, 0, cloth.edges);
 //     amplitude: f32,
 //     frequency: f32,
 // };
+
 // Выравнивание: каждое поле должно быть выровнено по 4 байтам.
 // Для простоты использую массив из 16 float (64 байта).
 const uniformData = new Float32Array([
-    0.016,   // 0. dt (шаг по времени)
-    9.8,     // 1. gravity
-    0.0,     // 2. time (будет обновляться в  frame())
-    // 5.0,     // 3. numIterations (как float, но будем использовать как u32 в шейдере)
-    0.0,     // 4. enableGravity (1 - вкл, 0 - выкл)
-    cloth.cornerIndices[0],
-    cloth.cornerIndices[1],
-    cloth.cornerIndices[2],
-    cloth.cornerIndices[3],
-    cloth.centerIndex,
-    1.0,     // 10. amplitude
-    2.0,     // 11. frequency
-    // остальные пока зарезервируем
+    0.004,                    // 0. dt (шаг по времени)
+    9.8,                      // 1. gravity
+    0.0,                      // 2. time (будет обновляться в  frame())
+    0.0,                      // 3. enableGravity (1 - вкл, 0 - выкл)
+    cloth.cornerIndices[0],   // 4
+    cloth.cornerIndices[1],   // 5
+    cloth.cornerIndices[2],   // 6
+    cloth.cornerIndices[3],   // 7
+    cloth.centerIndex,        // 8
+    1.0,                      // 9. amplitude
+    2.0,                      // 10. frequency
+    2.0,                      // 11. numIterations (количество итераций PBD)
 ]);
 
 const uniformBuffer = device.createBuffer({
@@ -239,7 +239,7 @@ fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
     let y = pos.y * cosA - pos.z * sinA;
     let z = pos.y * sinA + pos.z * cosA;
     // Масштабируем, чтобы влезло в экран
-    let scale = 0.8;
+    let scale = 1.5;
     return vec4<f32>(x * scale, y * scale, z * scale, 1.0);
 }
 `;
@@ -284,128 +284,241 @@ const pipeline = device.createRenderPipeline({
 });
 
 // ============================================================
-// COMPUTE-ШЕЙДЕР
+// COMPUTE-ШЕЙДЕР 1: Verlet-интеграция (обновление позиций)
 // ============================================================
 
-// const computeShaderCode = `
-// // Объявляем буфер вершин как массив трёхмерных векторов.
-// // Доступ: чтение и запись (read_write).
-// @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
-
-// // Буфер предыдущих позиций: чтение/запись
-// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
-
-// @group(0) @binding(2) var<uniform> uniforms: Uniforms;
-// // Uniform-буфер с параметрами (одинак для всех потоков)
-// struct Uniforms {
-//     dt: f32,             // шаг по времени
-//     gravity: f32,
-//     time: f32,
-//     enableGravity: f32,  // флаг: вкл/выкл гравитация
-//     corner0: u32,
-//     corner1: u32,
-//     corner2: u32,
-//     corner3: u32,
-//     center: u32,
-//     amplitude: f32,
-//     frequency: f32,
-// };
-
-// // Главная функция compute-шейдера.
-// // @workgroup_size(64): в каждой группе 64 потока.
-// // global_invocation_id: индекс текущего потока (x, y, z).
-// @compute @workgroup_size(64)
-// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-
-//     let i = id.x;                                   // индекс вершины из первой компоненты id
-//     if (i >= arrayLength(&vertices)) { return; }    // проверяем, не выходит ли индекс за пределы массива
-
-//     // === 1. Углы закреплены: пропускаем интеграцию (оставляем их на месте) ===
-//     let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
-//                     i == uniforms.corner2 || i == uniforms.corner3);
-//     if (isCorner) {
-//         return;  // мы их не трогаем
-//     }
-
-//     // Читаем текущую и предыдущую позицию
-//     let pos = vertices[i];
-//     let prev = prevPositions[i];
-
-//     // Вычисляем ускорение (гравитация, если включена)
-//     var accel = vec3<f32>(0.0, 0.0, 0.0);
-//     if (uniforms.enableGravity > 0.5) {
-//         accel.y = -uniforms.gravity;
-//     }
-
-//     // Verlet-интеграция (для неугловых вершин): newPos = 2*pos - prev + accel * dt^2
-//     let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
-
-//     // // === 2. Центральная вершина - особый случай ===
-//     // if (i == uniforms.center) {
-//     //     // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
-//     //     let basePos = prevPositions[i];
-
-//     //     // Вычисляем смещение по Y по синусу
-//     //     let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
-//     //     let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
-
-//     //     // Записываем новую позицию центра
-//     //     vertices[i] = newCenterPos;
-
-//     //     // Обновляем prevPositions, чтобы в следующем кадре не было рывка
-//     //     prevPositions[i] = newCenterPos;
-
-//     //     // Завершаем обработку этой вершины
-//     //     return;
-//     // }
-
-//     // Отладка: принудительно поднимаем центр на 1.0 по Y
-//     if (i == uniforms.center) {
-//         let pos = vertices[i];
-//         vertices[i] = vec3<f32>(pos.x, pos.y + 1.0, pos.z);
-//         return;
-//     }
-
-//     // === 3. Обычные вершины (не углы, не центр) ===
-//     prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
-//     vertices[i] = newPos;          // записываем новую позицию
-// }
-// `;
-
-// отладка для проверки движения сетки
-const computeShaderCode = `
+const integrateShaderCode = `
+// Объявляем буфер вершин как массив трёхмерных векторов.
+// Доступ: чтение и запись (read_write).
 @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+
+// Буфер предыдущих позиций: чтение/запись
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+
+// Uniform-буфер с параметрами (одинак для всех потоков)
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+// Буфер для ограничения нерастяжимости
+// @group(0) @binding(3) var<storage, read> edges: array<vec3<f32>>;
+
+struct Uniforms {
+    dt: f32,             // шаг по времени
+    gravity: f32,
+    time: f32,
+    enableGravity: f32,  // флаг: вкл/выкл гравитация
+    corner0: u32,
+    corner1: u32,
+    corner2: u32,
+    corner3: u32,
+    center: u32,
+    amplitude: f32,
+    frequency: f32,
+    numIterations: f32,
+};
+
+// === Verlet-интеграция
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= arrayLength(&vertices)) { return; }
+
+    let i = id.x;                                   // индекс вершины из первой компоненты id
+    if (i >= arrayLength(&vertices)) { return; }    // проверяем, не выходит ли индекс за пределы массива
+
+    // === 1. Углы закреплены: пропускаем интеграцию (оставляем их на месте) ===
+    let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
+                    i == uniforms.corner2 || i == uniforms.corner3);
+    if (isCorner) { return; }
+
+    // === 2. Центральная вершина обраб отдельно, движ по закону синуса ===
+    if (i == uniforms.center) {
+        // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
+        let basePos = prevPositions[i];
+
+        // Вычисляем смещение по Y по синусу
+        let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
+        let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
+
+        // Записываем новую позицию центра
+        vertices[i] = newCenterPos;
+
+        // Обновляем prevPositions, чтобы в следующем кадре не было рывка
+        prevPositions[i] = newCenterPos;
+
+        // Завершаем обработку этой вершины
+        return;
+    }
+
+    // // Отладка: принудительно поднимаем центр на 1.0 по Y
+    // if (i == uniforms.center) {
+    //     let pos = vertices[i];
+    //     vertices[i] = vec3<f32>(pos.x, pos.y + 1.0, pos.z);
+    //     return;
+    // }
+
+    // === 3. Обычные вершины (не углы, не центр) ===
+
+    // Читаем текущую и предыдущую позицию
     let pos = vertices[i];
-    vertices[i] = pos + vec3<f32>(0.0, 0.001, 0.0);
+    let prev = prevPositions[i];
+
+    // Вычисляем ускорение (гравитация, если включена)
+    var accel = vec3<f32>(0.0, 0.0, 0.0);
+    if (uniforms.enableGravity > 0.5) {
+        accel.y = -uniforms.gravity;
+    }
+
+    // Verlet-интеграция (для неугловых вершин): newPos = 2*pos - prev + accel * dt^2
+    let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+
+    prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
+    vertices[i] = newPos;          // записываем новую позицию
 }
 `;
 
+// ============================================================
+// COMPUTE-ШЕЙДЕР 2: Решение ограничений (PBD constraints)
+// ============================================================
+const solveShaderCode = `
+// Буфер текущих позиций (чтение/запись)
+@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
 
-// Создаём модуль шейдера из строки кода
-const computeModule = device.createShaderModule({ code: computeShaderCode });
+// Буфер предыдущих позиций (чтение/запись) — для синхронизации
+// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
 
-// Создаём compute-пайплайн
-const computePipeline = device.createComputePipeline({
-    layout: 'auto', // автоматически определить layout по коду шейдера
+// Буфер рёбер: каждое ребро — это vec3(i, j, restLength)
+@group(0) @binding(2) var<storage, read> edges: array<vec3<f32>>;
+
+// Uniform-параметры (нам нужны только corner's и numIterations)
+struct Uniforms {
+    dt: f32,
+    gravity: f32,
+    time: f32,
+    enableGravity: f32,
+    corner0: u32,
+    corner1: u32,
+    corner2: u32,
+    corner3: u32,
+    center: u32,
+    amplitude: f32,
+    frequency: f32,
+    numIterations: f32,
+};
+
+@group(0) @binding(3) var<uniform> uniforms: Uniforms;
+
+@compute @workgroup_size(64)
+fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
+    let edgeIdx = id.x;
+    if (edgeIdx >= arrayLength(&edges)) { return; }
+
+    // Читаем данные ребра из буфера
+    let edge = edges[edgeIdx];
+    let i = u32(edge.x);     // индекс первой вершины
+    let j = u32(edge.y);     // индекс второй вершины
+    let restLength = edge.z; // целевая (исходная) длина ребра
+
+    let posI = vertices[i];
+    let posJ = vertices[j];
+    
+    // вектор между вершинами и его длину
+    let delta = posI - posJ;
+    let currentLength = length(delta);
+    
+    if (currentLength < 0.0001) { return; } // защита от деления на ноль (совпадение вершин)
+    
+    // === PBD: коррекция позиций для соблюдения ограничения длины ===
+    // Формула: correction = (currentLength - restLength) / currentLength * 0.5
+    // Делим на 2, чтобы сдвинуть обе вершины навстречу друг другу
+    
+    let correction = (currentLength - restLength) / currentLength * 0.5;
+    let correctionVec = delta * correction;
+
+    // Проверяем, закреплена ли вершина (угол или центр)
+    let isPinnedI = (i == uniforms.corner0 || i == uniforms.corner1 || 
+                     i == uniforms.corner2 || i == uniforms.corner3 || 
+                     i == uniforms.center);
+    let isPinnedJ = (j == uniforms.corner0 || j == uniforms.corner1 || 
+                     j == uniforms.corner2 || j == uniforms.corner3 || 
+                     j == uniforms.center);
+    
+    // Применяем коррекцию и синхронизируем prevPositions
+    if (isPinnedI && isPinnedJ) {
+        // ничего не делаем
+    } else if (isPinnedI) {
+        let newJ = posJ + correctionVec * 2.0;
+        vertices[j] = newJ;
+        // prevPositions[j] = newJ;
+    } else if (isPinnedJ) {
+        let newI = posI - correctionVec * 2.0;
+        vertices[i] = newI;
+        // prevPositions[i] = newI;
+    } else {
+        let newI = posI - correctionVec;
+        let newJ = posJ + correctionVec;
+        vertices[i] = newI;
+        vertices[j] = newJ;
+        // prevPositions[i] = newI;
+        // prevPositions[j] = newJ;
+    }
+}
+`;
+
+// // отладка для проверки движения сетки
+// const computeShaderCode = `
+// @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let i = id.x;
+//     if (i >= arrayLength(&vertices)) { return; }
+//     let pos = vertices[i];
+//     vertices[i] = pos + vec3<f32>(0.0, 0.001, 0.0);
+// }
+// `;
+
+
+// Создаём модули шейдеров
+const integrateModule = device.createShaderModule({ code: integrateShaderCode });
+const solveModule = device.createShaderModule({ code: solveShaderCode });
+
+// Создаём два compute-пайплайна:
+// 1. integratePipeline — для Verlet-интеграции
+const integratePipeline = device.createComputePipeline({
+    layout: 'auto',
     compute: {
-        module: computeModule,
-        entryPoint: 'main', // имя функции, с которой начинается выполнение
+        module: integrateModule,
+        entryPoint: 'main',
     },
 });
 
-// Создаём bind group для привязки буфера к шейдеру
-// соединяем буферы на GPU и слоты в шейдере
-const bindGroup = device.createBindGroup({
-    layout: computePipeline.getBindGroupLayout(0), // берём layout для группы 0
+// 2. solvePipeline — для решения ограничений расстояний
+const solvePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: {
+        module: solveModule,
+        entryPoint: 'solveConstraints',
+    },
+});
+
+
+// Создаём два bind group для разных пайплайнов:
+
+// 1. Bind group для интеграции (нужны vertices, prevPositions, uniforms)
+const integrateBindGroup = device.createBindGroup({
+    layout: integratePipeline.getBindGroupLayout(0),
     entries: [
-        // Порядок соответствует @binding в шейдере
+        { binding: 0, resource: { buffer: vertexBuffer } },       // vertices
+        { binding: 1, resource: { buffer: prevPosBuffer } },      // prevPositions
+        { binding: 2, resource: { buffer: uniformBuffer } },      // uniforms
+    ],
+});
+
+// 2. Bind group для решения ограничений (нужны vertices, edges, uniforms)
+const solveBindGroup = device.createBindGroup({
+    layout: solvePipeline.getBindGroupLayout(0),
+    entries: [
         { binding: 0, resource: { buffer: vertexBuffer } },
-        // { binding: 1, resource: { buffer: prevPosBuffer } },
-        // { binding: 2, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: { buffer: prevPosBuffer } },
+        { binding: 2, resource: { buffer: edgeBuffer } },
+        { binding: 3, resource: { buffer: uniformBuffer } },
     ],
 });
 
@@ -432,8 +545,8 @@ function frame() {
     // const uniformData = new Float32Array([0.016, 9.8, 0.0, 5.0, 1.0, ...]);
 
     // Внутри frame() обновляем только нужные поля (сначала я думал создавать копию):
-    uniformData[2] = time;                   // время
-    uniformData[3] = gravityCheck.checked ? 1 : 0; // enableGravity (индекс 4, если помните)
+    uniformData[2] = time;                          // время
+    uniformData[3] = gravityCheck.checked ? 1 : 0;  // enableGravity (индекс 4, если помните)
     
     // console.log('time =', time);
     // console.log('centerIndex from cloth:', cloth.centerIndex);
@@ -444,19 +557,39 @@ function frame() {
 
     const encoder = device.createCommandEncoder();
 
-    // // =========== COMPUTE-ПРОХОД ===========
-    // const computePass = encoder.beginComputePass();
-    // computePass.setPipeline(computePipeline);
-    // computePass.setBindGroup(0, bindGroup);  // привязывает bind group к группе 0 (соответствует @group(0) в шейдере)
+    // ===========================================
+    // COMPUTE-ПРОХОД 1: Verlet-интеграция
+    // ===========================================
+    const computePass1 = encoder.beginComputePass();
+    computePass1.setPipeline(integratePipeline);
+    computePass1.setBindGroup(0, integrateBindGroup);
+    
+    // Запускаем вычисления для всех вершин
+    const vertexWorkgroupCount = Math.ceil(cloth.numVertices / 64);
+    computePass1.dispatchWorkgroups(vertexWorkgroupCount);
+    computePass1.end();
+    
+    // ===========================================
+    // COMPUTE-ПРОХОД 2: Решение ограничений (PBD)
+    // ===========================================
+    const computePass2 = encoder.beginComputePass();
+    computePass2.setPipeline(solvePipeline);
+    computePass2.setBindGroup(0, solveBindGroup);
+    
+    // Читаем количество итераций из uniformData[11]
+    const numIterations = Math.floor(uniformData[11]);
+    
+    // Запускаем решение ограничений несколько раз
+    // Чем больше итераций, тем жёстче ткань
+    const edgeWorkgroupCount = Math.ceil(cloth.numEdges / 64);
+    for (let iter = 0; iter < numIterations; iter++) {
+        computePass2.dispatchWorkgroups(edgeWorkgroupCount);
+    }
+    computePass2.end();
 
-    // // Рассчитываем количество рабочих групп: нужно покрыть все вершины.
-    // // В каждой группе 64 потока, поэтому групп = ceil(numVertices / 64).
-    // const workgroupCount = Math.ceil(cloth.numVertices / 64);
-    // computePass.dispatchWorkgroups(workgroupCount);
-
-    // computePass.end();
-    // ======================================
-
+    // ===========================================
+    // RENDER-ПРОХОД: отрисовка сетки
+    // ===========================================
     const textureView = context.getCurrentTexture().createView();
     const renderPass = encoder.beginRenderPass({
         colorAttachments: [
@@ -468,15 +601,17 @@ function frame() {
             },
         ],
     });
-
+    
     renderPass.setPipeline(pipeline);
     renderPass.setVertexBuffer(0, vertexBuffer);
     renderPass.setIndexBuffer(indexBuffer, 'uint32');
     renderPass.drawIndexed(cloth.indices.length);
-
     renderPass.end();
+    
+    // Отправляем все команды на GPU
     device.queue.submit([encoder.finish()]);
-
+    
+    // Запрашиваем следующий кадр
     requestAnimationFrame(frame);
 }
 
