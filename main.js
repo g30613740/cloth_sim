@@ -210,9 +210,9 @@ const uniformData = new Float32Array([
     cloth.cornerIndices[2],   // 6
     cloth.cornerIndices[3],   // 7
     cloth.centerIndex,        // 8
-    1.0,                      // 9. amplitude
-    2.0,                      // 10. frequency
-    2.0,                      // 11. numIterations (количество итераций PBD)
+    3.0,                      // 9. amplitude
+    4.0,                      // 10. frequency
+    10.0,                      // 11. numIterations (количество итераций PBD)
     canvas.width,             // canvasWidth
     canvas.height             // canvasHeight
 ]);
@@ -365,37 +365,56 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         vertices[idx3 + 2u]
     );
 
-    // === 1. Углы закреплены: пропускаем интеграцию (оставляем их на месте) ===
+    // === 1. Углы закреплены: пропускаем интеграцию ===
     let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
                     i == uniforms.corner2 || i == uniforms.corner3);
     if (isCorner) { return; }
 
     // === 2. Центральная вершина обраб отдельно, движ по закону синуса ===
-    if (i == uniforms.center) {
-        // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
-        let basePos = vec3<f32>(
-            prevPositions[idx3],
-            prevPositions[idx3 + 1u],
-            prevPositions[idx3 + 2u]
-        );
+    // if (i == uniforms.center) {
+    //     // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
+    //     let basePos = vec3<f32>(
+    //         prevPositions[idx3],
+    //         prevPositions[idx3 + 1u],
+    //         prevPositions[idx3 + 2u]
+    //     );
 
-        // Вычисляем смещение по Y по синусу
-        let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
-        let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
+    //     // Вычисляем смещение по Y по синусу
+    //     let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
+    //     let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
 
-        // Записываем новую позицию центра
-        vertices[idx3]     = newCenterPos.x;
-        vertices[idx3 + 1u] = newCenterPos.y;
-        vertices[idx3 + 2u] = newCenterPos.z;
+    //     // Записываем новую позицию центра
+    //     vertices[idx3]      = newCenterPos.x;
+    //     vertices[idx3 + 1u] = newCenterPos.y;
+    //     vertices[idx3 + 2u] = newCenterPos.z;
 
-        // Обновляем prevPositions, чтобы в следующем кадре не было рывка
-        prevPositions[idx3]     = newCenterPos.x;
-        prevPositions[idx3 + 1u] = newCenterPos.y;
-        prevPositions[idx3 + 2u] = newCenterPos.z;
+    //     // Обновляем prevPositions, чтобы в следующем кадре не было рывка
+    //     prevPositions[idx3]      = newCenterPos.x;
+    //     prevPositions[idx3 + 1u] = newCenterPos.y;
+    //     prevPositions[idx3 + 2u] = newCenterPos.z;
 
-        // Завершаем обработку этой вершины
+    //     // Завершаем обработку этой вершины
+    //     return;
+    // }
+
+    if (i == 220u) {
+        vertices[idx3 + 1u] += 0.05;
+        prevPositions[idx3 + 1u] += 0.05;
         return;
     }
+    // === ОТЛАДКА центра ===
+    // if (i == uniforms.center) {
+    //     // Жёсткое смещение вверх на 1.5 для проверки
+    //     let basePos = vec3<f32>(vertices[idx3], vertices[idx3+1u], vertices[idx3+2u]);
+    //     let newPos = vec3<f32>(basePos.x, basePos.y + 1.5, basePos.z);
+    //     vertices[idx3]   = newPos.x;
+    //     vertices[idx3+1u] = newPos.y;
+    //     vertices[idx3+2u] = newPos.z;
+    //     prevPositions[idx3]   = newPos.x;
+    //     prevPositions[idx3+1u] = newPos.y;
+    //     prevPositions[idx3+2u] = newPos.z;
+    //     return;
+    // }
 
     // // Отладка: принудительно поднимаем центр на 1.0 по Y
     // if (i == uniforms.center) {
@@ -432,6 +451,37 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     vertices[idx3 + 1u] = newPos.y;
     vertices[idx3 + 2u] = newPos.z;
 }
+
+
+// // === ОТЛАДОЧНЫЙ ШЕЙДЕР ===
+
+// @group(0) @binding(0) var<storage, read_write> vertices: array<f32>;
+
+// struct Uniforms {
+//     dt: f32,
+//     gravity: f32,
+//     time: f32,
+//     enableGravity: f32,
+//     corner0: u32,
+//     corner1: u32,
+//     corner2: u32,
+//     corner3: u32,
+//     center: u32,
+//     amplitude: f32,
+//     frequency: f32,
+//     numIterations: f32,
+//     canvasWidth: f32,
+//     canvasHeight: f32,
+// };
+
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let i = id.x;
+//     if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
+//     let idx = i * 3u;
+//     vertices[idx + 1u] += 0.005; // медленный подъём
+// }
+
 `;
 
 // ============================================================
@@ -442,9 +492,9 @@ const solveShaderCode = `
 @group(0) @binding(0) var<storage, read_write> vertices: array<f32>;
 
 // Буфер предыдущих позиций (чтение/запись) — для синхронизации
-@group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
+// @group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
 
-// Буфер рёбер: каждое ребро — это vec3(i, j, restLength)
+// Буфер рёбер: каждое ребро - это vec3(i, j, restLength)
 @group(0) @binding(2) var<storage, read> edges: array<f32>;
 
 // Uniform-параметры (нам нужны только corner's и numIterations)
@@ -512,17 +562,17 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         vertices[j3]   = newJ.x;
         vertices[j3+1u] = newJ.y;
         vertices[j3+2u] = newJ.z;
-        prevPositions[j3]   = newJ.x;
-        prevPositions[j3+1u] = newJ.y;
-        prevPositions[j3+2u] = newJ.z;
+        // prevPositions[j3]   = newJ.x;
+        // prevPositions[j3+1u] = newJ.y;
+        // prevPositions[j3+2u] = newJ.z;
     } else if (isPinnedJ) {
         let newI = posI - correctionVec * 2.0;
         vertices[i3]   = newI.x;
         vertices[i3+1u] = newI.y;
         vertices[i3+2u] = newI.z;
-        prevPositions[i3]   = newI.x;
-        prevPositions[i3+1u] = newI.y;
-        prevPositions[i3+2u] = newI.z;
+        // prevPositions[i3]   = newI.x;
+        // prevPositions[i3+1u] = newI.y;
+        // prevPositions[i3+2u] = newI.z;
     } else {
         let newI = posI - correctionVec;
         let newJ = posJ + correctionVec;
@@ -533,12 +583,12 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         vertices[j3+1u] = newJ.y;
         vertices[j3+2u] = newJ.z;
 
-        prevPositions[i3]   = newI.x;
-        prevPositions[i3+1u] = newI.y;
-        prevPositions[i3+2u] = newI.z;
-        prevPositions[j3]   = newJ.x;
-        prevPositions[j3+1u] = newJ.y;
-        prevPositions[j3+2u] = newJ.z;
+        // prevPositions[i3]   = newI.x;
+        // prevPositions[i3+1u] = newI.y;
+        // prevPositions[i3+2u] = newI.z;
+        // prevPositions[j3]   = newJ.x;
+        // prevPositions[j3+1u] = newJ.y;
+        // prevPositions[j3+2u] = newJ.z;
     }
 }
 `;
@@ -555,12 +605,35 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
 // }
 // `;
 
+// =============================================
+// COMPUTE-ШЕЙДЕР 3: синхронизация prevPositions
+// =============================================
+
+const syncPrevShaderCode = `
+@group(0) @binding(0) var<storage, read> vertices: array<f32>;
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
+    let idx3 = i * 3u;
+    prevPositions[idx3]   = vertices[idx3];
+    prevPositions[idx3+1u] = vertices[idx3+1u];
+    prevPositions[idx3+2u] = vertices[idx3+2u];
+}
+`;
 
 // Создаём модули шейдеров
 const integrateModule = device.createShaderModule({ code: integrateShaderCode });
 const solveModule = device.createShaderModule({ code: solveShaderCode });
+const syncPrevModule = device.createShaderModule({ code: syncPrevShaderCode });
 
-// Создаём два compute-пайплайна:
+
+// ==================
+// COMPUTE-PIPELINES:
+// ==================
+
 // 1. integratePipeline — для Verlet-интеграции
 const integratePipeline = device.createComputePipeline({
     layout: 'auto',
@@ -579,8 +652,16 @@ const solvePipeline = device.createComputePipeline({
     },
 });
 
+// 3. syncPrevPipeline - для синхронизации движения
+const syncPrevPipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: syncPrevModule, entryPoint: 'main' },
+});
 
-// Создаём два bind group для разных пайплайнов:
+
+// ===========
+// BIND-GROUPS
+// ===========
 
 // 1. Bind group для интеграции (нужны vertices, prevPositions, uniforms)
 const integrateBindGroup = device.createBindGroup({
@@ -597,9 +678,18 @@ const solveBindGroup = device.createBindGroup({
     layout: solvePipeline.getBindGroupLayout(0),
     entries: [
         { binding: 0, resource: { buffer: vertexBuffer } },
-        { binding: 1, resource: { buffer: prevPosBuffer } },
+        // { binding: 1, resource: { buffer: prevPosBuffer } },
         { binding: 2, resource: { buffer: edgeBuffer } },
         { binding: 3, resource: { buffer: uniformBuffer } },
+    ],
+});
+
+// 3. Bind group для синхронизации
+const syncPrevBindGroup = device.createBindGroup({
+    layout: syncPrevPipeline.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: vertexBuffer } },
+        { binding: 1, resource: { buffer: prevPosBuffer } },
     ],
 });
 
@@ -661,23 +751,30 @@ function frame() {
     computePass1.dispatchWorkgroups(vertexWorkgroupCount);
     computePass1.end();
     
-    // ===========================================
-    // COMPUTE-ПРОХОД 2: Решение ограничений (PBD)
-    // ===========================================
-    const computePass2 = encoder.beginComputePass();
-    computePass2.setPipeline(solvePipeline);
-    computePass2.setBindGroup(0, solveBindGroup);
+    // // ===========================================
+    // // COMPUTE-ПРОХОД 2: Решение ограничений (PBD)
+    // // ===========================================
+    // const computePass2 = encoder.beginComputePass();
+    // computePass2.setPipeline(solvePipeline);
+    // computePass2.setBindGroup(0, solveBindGroup);
     
-    // Читаем количество итераций из uniformData[11]
-    const numIterations = Math.floor(uniformData[11]);
+    // // Читаем количество итераций из uniformData[11]
+    // const numIterations = Math.floor(uniformData[11]);
     
-    // Запускаем решение ограничений несколько раз
-    // Чем больше итераций, тем жёстче ткань
-    const edgeWorkgroupCount = Math.ceil(cloth.numEdges / 64);
-    for (let iter = 0; iter < numIterations; iter++) {
-        computePass2.dispatchWorkgroups(edgeWorkgroupCount);
-    }
-    computePass2.end();
+    // // Запускаем решение ограничений несколько раз
+    // // Чем больше итераций, тем жёстче ткань
+    // const edgeWorkgroupCount = Math.ceil(cloth.numEdges / 64);
+    // for (let iter = 0; iter < numIterations; iter++) {
+    //     computePass2.dispatchWorkgroups(edgeWorkgroupCount);
+    // }
+    // computePass2.end();
+
+    // // Синхронизация prevPositions
+    // const computePass3 = encoder.beginComputePass();
+    // computePass3.setPipeline(syncPrevPipeline);
+    // computePass3.setBindGroup(0, syncPrevBindGroup);
+    // computePass3.dispatchWorkgroups(vertexWorkgroupCount);
+    // computePass3.end();
 
     // ===========================================
     // RENDER-ПРОХОД: отрисовка сетки
