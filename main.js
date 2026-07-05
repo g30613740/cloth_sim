@@ -203,7 +203,7 @@ device.queue.writeBuffer(edgeBuffer, 0, cloth.edges);
 // Выравнивание: каждое поле должно быть выровнено по 4 байтам.
 // Для простоты использую массив из 16 float (64 байта).
 const uniformData = new Float32Array([
-    0.004,                    // 0. dt (шаг по времени)
+    0.001,                    // 0. dt (шаг по времени)
     9.8,                      // 1. gravity
     0.0,                      // 2. time (будет обновляться в  frame())
     0.0,                      // 3. enableGravity (1 - вкл, 0 - выкл)
@@ -239,7 +239,7 @@ fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
     let y = pos.y * cosA - pos.z * sinA;
     let z = pos.y * sinA + pos.z * cosA;
     // Масштабируем, чтобы влезло в экран
-    let scale = 1.5;
+    let scale = 0.1;
     return vec4<f32>(x * scale, y * scale, z * scale, 1.0);
 }
 `;
@@ -382,7 +382,7 @@ const solveShaderCode = `
 @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
 
 // Буфер предыдущих позиций (чтение/запись) — для синхронизации
-// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
 
 // Буфер рёбер: каждое ребро — это vec3(i, j, restLength)
 @group(0) @binding(2) var<storage, read> edges: array<vec3<f32>>;
@@ -446,18 +446,18 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     } else if (isPinnedI) {
         let newJ = posJ + correctionVec * 2.0;
         vertices[j] = newJ;
-        // prevPositions[j] = newJ;
+        prevPositions[j] = newJ;
     } else if (isPinnedJ) {
         let newI = posI - correctionVec * 2.0;
         vertices[i] = newI;
-        // prevPositions[i] = newI;
+        prevPositions[i] = newI;
     } else {
         let newI = posI - correctionVec;
         let newJ = posJ + correctionVec;
         vertices[i] = newI;
         vertices[j] = newJ;
-        // prevPositions[i] = newI;
-        // prevPositions[j] = newJ;
+        prevPositions[i] = newI;
+        prevPositions[j] = newJ;
     }
 }
 `;
