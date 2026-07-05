@@ -213,6 +213,8 @@ const uniformData = new Float32Array([
     1.0,                      // 9. amplitude
     2.0,                      // 10. frequency
     2.0,                      // 11. numIterations (количество итераций PBD)
+    canvas.width,             // canvasWidth
+    canvas.height             // canvasHeight
 ]);
 
 const uniformBuffer = device.createBuffer({
@@ -225,20 +227,49 @@ device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 // 5. Шейдеры
 // ============================================================
 const vertexShaderCode = `
+struct Uniforms {
+    dt: f32,
+    gravity: f32,
+    time: f32,
+    enableGravity: f32,
+    corner0: u32,
+    corner1: u32,
+    corner2: u32,
+    corner3: u32,
+    center: u32,
+    amplitude: f32,
+    frequency: f32,
+    numIterations: f32,
+    canvasWidth: f32,
+    canvasHeight: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
 @vertex
 fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
-    // Простая изометрическая проекция:
-    // Поворачиваем плоскость на 30 градусов вокруг оси X
-    let angle = 0.5; // 0.5 радиан ~ 30 градусов
+
+    // Изометрический поворот вокруг X
+    let angle = 0.5;
     let cosA = cos(angle);
     let sinA = sin(angle);
-    // Вращаем: x остаётся, y и z смещаются
-    let x = pos.x;
-    let y = pos.y * cosA - pos.z * sinA;
-    let z = pos.y * sinA + pos.z * cosA;
-    // Масштабируем, чтобы влезло в экран
-    let scale = 0.1;
-    return vec4<f32>(x * scale, y * scale, z * scale, 1.0);
+    var p = vec3<f32>(pos.x, pos.y * cosA - pos.z * sinA, pos.y * sinA + pos.z * cosA);
+    
+    // Масштаб, чтобы ткань занимала примерно 80% высоты экрана
+    let desiredHeight = 0.8;
+    let clothHalfHeight = 1.0 * cosA; // половина высоты ткани после поворота (max |y|)
+    let scale = desiredHeight / clothHalfHeight;
+    
+    // Корректировка по X с учётом aspect ratio
+    let aspect = uniforms.canvasWidth / uniforms.canvasHeight;
+    var xNDC = p.x * scale / aspect;
+    var yNDC = p.y * scale;
+    
+    // Опускаем камеру немного вниз, чтобы видеть верхнюю часть ткани
+    // (опционально, зависит от желаемого ракурса)
+    // yNDC -= 0.1;
+    
+    return vec4<f32>(xNDC, yNDC, 0.0, 1.0);
 }
 `;
 
@@ -312,6 +343,8 @@ struct Uniforms {
     amplitude: f32,
     frequency: f32,
     numIterations: f32,
+    canvasWidth: f32,
+    canvasHeight: f32,
 };
 
 // === Verlet-интеграция
@@ -428,6 +461,8 @@ struct Uniforms {
     amplitude: f32,
     frequency: f32,
     numIterations: f32,
+    canvasWidth: f32,
+    canvasHeight: f32,
 };
 
 @group(0) @binding(3) var<uniform> uniforms: Uniforms;
@@ -568,6 +603,14 @@ const solveBindGroup = device.createBindGroup({
     ],
 });
 
+// bind group для рендера
+const renderBindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } }
+    ]
+});
+
 // // отладка для проверки движения сетки
 // const bindGroup = device.createBindGroup({
 //     layout: computePipeline.getBindGroupLayout(0),
@@ -593,6 +636,9 @@ function frame() {
     // Внутри frame() обновляем только нужные поля (сначала я думал создавать копию):
     uniformData[2] = time;                          // время
     uniformData[3] = gravityCheck.checked ? 1 : 0;  // enableGravity (индекс 4, если помните)
+
+    uniformData[12] = canvas.clientWidth;
+    uniformData[13] = canvas.clientHeight;
     
     // console.log('time =', time);
     // console.log('centerIndex from cloth:', cloth.centerIndex);
@@ -651,6 +697,7 @@ function frame() {
     renderPass.setPipeline(pipeline);
     renderPass.setVertexBuffer(0, vertexBuffer);
     renderPass.setIndexBuffer(indexBuffer, 'uint32');
+    renderPass.setBindGroup(0, renderBindGroup);
     renderPass.drawIndexed(cloth.indices.length);
     renderPass.end();
     
