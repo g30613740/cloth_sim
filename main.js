@@ -106,8 +106,6 @@ function buildCloth(N, size) {
         }
     }
 
-    // диагональные – для жёсткости
-
     const vertexArray = new Float32Array(vertices);
     const indexArray = new Uint32Array(indices);
 
@@ -290,16 +288,16 @@ const pipeline = device.createRenderPipeline({
 const integrateShaderCode = `
 // Объявляем буфер вершин как массив трёхмерных векторов.
 // Доступ: чтение и запись (read_write).
-@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+@group(0) @binding(0) var<storage, read_write> vertices: array<f32>;
 
 // Буфер предыдущих позиций: чтение/запись
-@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
 
 // Uniform-буфер с параметрами (одинак для всех потоков)
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
 // Буфер для ограничения нерастяжимости
-// @group(0) @binding(3) var<storage, read> edges: array<vec3<f32>>;
+// @group(0) @binding(3) var<storage, read> edges: array<f32>;
 
 struct Uniforms {
     dt: f32,             // шаг по времени
@@ -321,7 +319,18 @@ struct Uniforms {
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let i = id.x;                                   // индекс вершины из первой компоненты id
-    if (i >= arrayLength(&vertices)) { return; }    // проверяем, не выходит ли индекс за пределы массива
+    
+    // Проверка по количеству float'ов: каждая вершина занимает 3 числа
+    if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
+
+    let idx3 = i * 3u;
+
+    // Чтение текущей позиции
+    var pos = vec3<f32>(
+        vertices[idx3],
+        vertices[idx3 + 1u],
+        vertices[idx3 + 2u]
+    );
 
     // === 1. Углы закреплены: пропускаем интеграцию (оставляем их на месте) ===
     let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
@@ -331,17 +340,25 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // === 2. Центральная вершина обраб отдельно, движ по закону синуса ===
     if (i == uniforms.center) {
         // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
-        let basePos = prevPositions[i];
+        let basePos = vec3<f32>(
+            prevPositions[idx3],
+            prevPositions[idx3 + 1u],
+            prevPositions[idx3 + 2u]
+        );
 
         // Вычисляем смещение по Y по синусу
         let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
         let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
 
         // Записываем новую позицию центра
-        vertices[i] = newCenterPos;
+        vertices[idx3]     = newCenterPos.x;
+        vertices[idx3 + 1u] = newCenterPos.y;
+        vertices[idx3 + 2u] = newCenterPos.z;
 
         // Обновляем prevPositions, чтобы в следующем кадре не было рывка
-        prevPositions[i] = newCenterPos;
+        prevPositions[idx3]     = newCenterPos.x;
+        prevPositions[idx3 + 1u] = newCenterPos.y;
+        prevPositions[idx3 + 2u] = newCenterPos.z;
 
         // Завершаем обработку этой вершины
         return;
@@ -356,9 +373,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // === 3. Обычные вершины (не углы, не центр) ===
 
-    // Читаем текущую и предыдущую позицию
-    let pos = vertices[i];
-    let prev = prevPositions[i];
+    // Читаем предыдущую позицию
+    let prev = vec3<f32>(
+        prevPositions[idx3],
+        prevPositions[idx3 + 1u],
+        prevPositions[idx3 + 2u]
+    );
 
     // Вычисляем ускорение (гравитация, если включена)
     var accel = vec3<f32>(0.0, 0.0, 0.0);
@@ -368,9 +388,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Verlet-интеграция (для неугловых вершин): newPos = 2*pos - prev + accel * dt^2
     let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+          
+    // сохраняем старую позицию как "предыдущую" для следующего шага
+    prevPositions[idx3]      = pos.x;
+    prevPositions[idx3 + 1u] = pos.y;
+    prevPositions[idx3 + 2u] = pos.z;
 
-    prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
-    vertices[i] = newPos;          // записываем новую позицию
+    // записываем новую позицию
+    vertices[idx3]      = newPos.x;
+    vertices[idx3 + 1u] = newPos.y;
+    vertices[idx3 + 2u] = newPos.z;
 }
 `;
 
@@ -379,13 +406,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 // ============================================================
 const solveShaderCode = `
 // Буфер текущих позиций (чтение/запись)
-@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+@group(0) @binding(0) var<storage, read_write> vertices: array<f32>;
 
 // Буфер предыдущих позиций (чтение/запись) — для синхронизации
-@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+@group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
 
 // Буфер рёбер: каждое ребро — это vec3(i, j, restLength)
-@group(0) @binding(2) var<storage, read> edges: array<vec3<f32>>;
+@group(0) @binding(2) var<storage, read> edges: array<f32>;
 
 // Uniform-параметры (нам нужны только corner's и numIterations)
 struct Uniforms {
@@ -408,21 +435,23 @@ struct Uniforms {
 @compute @workgroup_size(64)
 fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     let edgeIdx = id.x;
-    if (edgeIdx >= arrayLength(&edges)) { return; }
+    if (edgeIdx * 3u + 2u >= arrayLength(&edges)) { return; }
 
-    // Читаем данные ребра из буфера
-    let edge = edges[edgeIdx];
-    let i = u32(edge.x);     // индекс первой вершины
-    let j = u32(edge.y);     // индекс второй вершины
-    let restLength = edge.z; // целевая (исходная) длина ребра
+    // Читаем ребра из буфера
+    let eIdx3 = edgeIdx * 3u;
+    let i = u32(edges[eIdx3]);
+    let j = u32(edges[eIdx3 + 1u]);
+    let restLength = edges[eIdx3 + 2u];
 
-    let posI = vertices[i];
-    let posJ = vertices[j];
+    let i3 = i * 3u;
+    let j3 = j * 3u;
+
+    let posI = vec3<f32>(vertices[i3], vertices[i3+1u], vertices[i3+2u]);
+    let posJ = vec3<f32>(vertices[j3], vertices[j3+1u], vertices[j3+2u]);
     
-    // вектор между вершинами и его длину
+    // вектор между вершинами и его длина
     let delta = posI - posJ;
     let currentLength = length(delta);
-    
     if (currentLength < 0.0001) { return; } // защита от деления на ноль (совпадение вершин)
     
     // === PBD: коррекция позиций для соблюдения ограничения длины ===
@@ -445,19 +474,36 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         // ничего не делаем
     } else if (isPinnedI) {
         let newJ = posJ + correctionVec * 2.0;
-        vertices[j] = newJ;
-        prevPositions[j] = newJ;
+        vertices[j3]   = newJ.x;
+        vertices[j3+1u] = newJ.y;
+        vertices[j3+2u] = newJ.z;
+        prevPositions[j3]   = newJ.x;
+        prevPositions[j3+1u] = newJ.y;
+        prevPositions[j3+2u] = newJ.z;
     } else if (isPinnedJ) {
         let newI = posI - correctionVec * 2.0;
-        vertices[i] = newI;
-        prevPositions[i] = newI;
+        vertices[i3]   = newI.x;
+        vertices[i3+1u] = newI.y;
+        vertices[i3+2u] = newI.z;
+        prevPositions[i3]   = newI.x;
+        prevPositions[i3+1u] = newI.y;
+        prevPositions[i3+2u] = newI.z;
     } else {
         let newI = posI - correctionVec;
         let newJ = posJ + correctionVec;
-        vertices[i] = newI;
-        vertices[j] = newJ;
-        prevPositions[i] = newI;
-        prevPositions[j] = newJ;
+        vertices[i3]   = newI.x;
+        vertices[i3+1u] = newI.y;
+        vertices[i3+2u] = newI.z;
+        vertices[j3]   = newJ.x;
+        vertices[j3+1u] = newJ.y;
+        vertices[j3+2u] = newJ.z;
+
+        prevPositions[i3]   = newI.x;
+        prevPositions[i3+1u] = newI.y;
+        prevPositions[i3+2u] = newI.z;
+        prevPositions[j3]   = newJ.x;
+        prevPositions[j3+1u] = newJ.y;
+        prevPositions[j3+2u] = newJ.z;
     }
 }
 `;
