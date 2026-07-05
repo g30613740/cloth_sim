@@ -144,6 +144,9 @@ const N = 20;          // количество сегментов (20x20 = 400 �
 const size = 2.0;      // размер квадрата в глобальных координатах
 const cloth = buildCloth(N, size);
 
+// Отладка: для доступа к cloth из консоли
+window.cloth = cloth;
+
 console.log(`Вершин: ${cloth.numVertices}, Рёбер: ${cloth.numEdges}`);
 
 // ============================================================
@@ -199,18 +202,18 @@ device.queue.writeBuffer(edgeBuffer, 0, cloth.edges);
 // Выравнивание: каждое поле должно быть выровнено по 4 байтам.
 // Для простоты использую массив из 16 float (64 байта).
 const uniformData = new Float32Array([
-    0.016,   // dt (шаг по времени)
-    9.8,     // gravity
-    0.0,     // time (будет обновляться в цикле)
-    5.0,     // numIterations (как float, но будем использовать как u32 в шейдере)
-    1.0,     // enableGravity (1 - включена, 0 - выключена)
+    0.016,   // 0. dt (шаг по времени)
+    9.8,     // 1. gravity
+    0.0,     // 2. time (будет обновляться в  frame())
+    // 5.0,     // 3. numIterations (как float, но будем использовать как u32 в шейдере)
+    0.0,     // 4. enableGravity (1 - вкл, 0 - выкл)
     cloth.cornerIndices[0],
     cloth.cornerIndices[1],
     cloth.cornerIndices[2],
     cloth.cornerIndices[3],
     cloth.centerIndex,
-    0.3,     // amplitude (амплитуда колебаний)
-    2.0,     // frequency (частота)
+    1.0,     // 10. amplitude
+    2.0,     // 11. frequency
     // остальные пока зарезервируем
 ]);
 
@@ -226,7 +229,18 @@ device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 const vertexShaderCode = `
 @vertex
 fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
-    return vec4<f32>(pos, 1.0);
+    // Простая изометрическая проекция:
+    // Поворачиваем плоскость на 30 градусов вокруг оси X
+    let angle = 0.5; // 0.5 радиан ~ 30 градусов
+    let cosA = cos(angle);
+    let sinA = sin(angle);
+    // Вращаем: x остаётся, y и z смещаются
+    let x = pos.x;
+    let y = pos.y * cosA - pos.z * sinA;
+    let z = pos.y * sinA + pos.z * cosA;
+    // Масштабируем, чтобы влезло в экран
+    let scale = 0.8;
+    return vec4<f32>(x * scale, y * scale, z * scale, 1.0);
 }
 `;
 
@@ -238,7 +252,7 @@ fn fs_main() -> @location(0) vec4<f32> {
 `;
 
 // ============================================================
-// 6. Пайплайн рендеринга (теперь line-list)
+// 6. Пайплайн рендеринга
 // ============================================================
 const pipeline = device.createRenderPipeline({
     layout: 'auto',
@@ -247,6 +261,7 @@ const pipeline = device.createRenderPipeline({
         entryPoint: 'vs_main',
         buffers: [
             {
+                // шаг для перехода к следующей вершине
                 arrayStride: 3 * 4, // 3 float по 4 байта
                 attributes: [
                     {
@@ -272,77 +287,102 @@ const pipeline = device.createRenderPipeline({
 // COMPUTE-ШЕЙДЕР
 // ============================================================
 
-const computeShaderCode = `
-// Объявляем буфер вершин как массив трёхмерных векторов.
-// Доступ: чтение и запись (read_write).
-@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
-
-// Буфер предыдущих позиций: чтение/запись
-@group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
-
-// Uniform-буфер с параметрами (одинак для всех потоков)
-struct Uniforms {
-    dt: f32,             // шаг по времени
-    gravity: f32,
-    enableGravity: f32,  // флаг: вкл/выкл гравитация
-};
-@group(0) @binding(2) var<uniform> uniforms: Uniforms;
-
-// Главная функция compute-шейдера.
-// @workgroup_size(64): в каждой группе 64 потока.
-// global_invocation_id: индекс текущего потока (x, y, z).
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    // Берём индекс вершины из первой компоненты id.
-    let i = id.x;
-
-    // Проверяем, не выходит ли индекс за пределы массива.
-    if (i >= arrayLength(&vertices)) {
-        return;
-    }
-
-    // Читаем текущую и предыдущую позицию
-    let pos = vertices[i];
-    let prev = prevPositions[i];
-
-    // Вычисляем ускорение (гравитация, если включена)
-    var accel = vec3<f32>(0.0, 0.0, 0.0);
-    if (uniforms.enableGravity > 0.5) {
-        accel.y = -uniforms.gravity;
-    }
-
-    // Verlet-интеграция: newPos = 2*pos - prev + accel * dt^2
-    let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
-
-    // Обновляем буферы
-    prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
-    vertices[i] = newPos;          // записываем новую позицию
-}
-`;
-
-// // отладка для проверки движения сетки
 // const computeShaderCode = `
+// // Объявляем буфер вершин как массив трёхмерных векторов.
+// // Доступ: чтение и запись (read_write).
 // @group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
-// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
-// @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
+// // Буфер предыдущих позиций: чтение/запись
+// @group(0) @binding(1) var<storage, read_write> prevPositions: array<vec3<f32>>;
+
+// @group(0) @binding(2) var<uniform> uniforms: Uniforms;
+// // Uniform-буфер с параметрами (одинак для всех потоков)
 // struct Uniforms {
-//     dt: f32,
+//     dt: f32,             // шаг по времени
 //     gravity: f32,
-//     enableGravity: f32,
+//     time: f32,
+//     enableGravity: f32,  // флаг: вкл/выкл гравитация
+//     corner0: u32,
+//     corner1: u32,
+//     corner2: u32,
+//     corner3: u32,
+//     center: u32,
+//     amplitude: f32,
+//     frequency: f32,
 // };
 
+// // Главная функция compute-шейдера.
+// // @workgroup_size(64): в каждой группе 64 потока.
+// // global_invocation_id: индекс текущего потока (x, y, z).
 // @compute @workgroup_size(64)
 // fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-//     let i = id.x;
-//     if (i >= arrayLength(&vertices)) { return; }
 
-//     // Принудительно сдвигаем все вершины по Y на 0.1 за кадр
+//     let i = id.x;                                   // индекс вершины из первой компоненты id
+//     if (i >= arrayLength(&vertices)) { return; }    // проверяем, не выходит ли индекс за пределы массива
+
+//     // === 1. Углы закреплены: пропускаем интеграцию (оставляем их на месте) ===
+//     let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
+//                     i == uniforms.corner2 || i == uniforms.corner3);
+//     if (isCorner) {
+//         return;  // мы их не трогаем
+//     }
+
+//     // Читаем текущую и предыдущую позицию
 //     let pos = vertices[i];
-//     let newPos = pos + vec3<f32>(0.0, 0.1, 0.0);
-//     vertices[i] = newPos;
+//     let prev = prevPositions[i];
+
+//     // Вычисляем ускорение (гравитация, если включена)
+//     var accel = vec3<f32>(0.0, 0.0, 0.0);
+//     if (uniforms.enableGravity > 0.5) {
+//         accel.y = -uniforms.gravity;
+//     }
+
+//     // Verlet-интеграция (для неугловых вершин): newPos = 2*pos - prev + accel * dt^2
+//     let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+
+//     // // === 2. Центральная вершина - особый случай ===
+//     // if (i == uniforms.center) {
+//     //     // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
+//     //     let basePos = prevPositions[i];
+
+//     //     // Вычисляем смещение по Y по синусу
+//     //     let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
+//     //     let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
+
+//     //     // Записываем новую позицию центра
+//     //     vertices[i] = newCenterPos;
+
+//     //     // Обновляем prevPositions, чтобы в следующем кадре не было рывка
+//     //     prevPositions[i] = newCenterPos;
+
+//     //     // Завершаем обработку этой вершины
+//     //     return;
+//     // }
+
+//     // Отладка: принудительно поднимаем центр на 1.0 по Y
+//     if (i == uniforms.center) {
+//         let pos = vertices[i];
+//         vertices[i] = vec3<f32>(pos.x, pos.y + 1.0, pos.z);
+//         return;
+//     }
+
+//     // === 3. Обычные вершины (не углы, не центр) ===
+//     prevPositions[i] = pos;        // сохраняем старую позицию как "предыдущую" для следующего шага
+//     vertices[i] = newPos;          // записываем новую позицию
 // }
 // `;
+
+// отладка для проверки движения сетки
+const computeShaderCode = `
+@group(0) @binding(0) var<storage, read_write> vertices: array<vec3<f32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= arrayLength(&vertices)) { return; }
+    let pos = vertices[i];
+    vertices[i] = pos + vec3<f32>(0.0, 0.001, 0.0);
+}
+`;
 
 
 // Создаём модуль шейдера из строки кода
@@ -364,8 +404,8 @@ const bindGroup = device.createBindGroup({
     entries: [
         // Порядок соответствует @binding в шейдере
         { binding: 0, resource: { buffer: vertexBuffer } },
-        { binding: 1, resource: { buffer: prevPosBuffer } },
-        { binding: 2, resource: { buffer: uniformBuffer } },
+        // { binding: 1, resource: { buffer: prevPosBuffer } },
+        // { binding: 2, resource: { buffer: uniformBuffer } },
     ],
 });
 
@@ -386,30 +426,35 @@ function frame() {
     // Обновляем uniform-буфер
     const time = performance.now() / 1000; // текущее время в секундах (пока не используется)
     const gravityCheck = document.getElementById('gravityCheck');
-    const enableGravity = gravityCheck.checked ? 1 : 0;
+    // const enableGravity = gravityCheck.checked ? 1 : 0;
 
     // В начале файла у нас есть объявление uniformData:
     // const uniformData = new Float32Array([0.016, 9.8, 0.0, 5.0, 1.0, ...]);
 
     // Внутри frame() обновляем только нужные поля (сначала я думал создавать копию):
     uniformData[2] = time;                   // время
-    uniformData[4] = gravityCheck.checked ? 1 : 0; // enableGravity (индекс 4, если помните)
-    // console.log('enableGravity =', enableGravity, 'time =', time);
+    uniformData[3] = gravityCheck.checked ? 1 : 0; // enableGravity (индекс 4, если помните)
+    
+    // console.log('time =', time);
+    // console.log('centerIndex from cloth:', cloth.centerIndex);
+    // console.log('uniformData[9]:', uniformData[9]);
+    // console.log('uniformData:', uniformData);
+
     device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
     const encoder = device.createCommandEncoder();
 
-    // =========== COMPUTE-ПРОХОД ===========
-    const computePass = encoder.beginComputePass();
-    computePass.setPipeline(computePipeline);
-    computePass.setBindGroup(0, bindGroup);  // привязывает bind group к группе 0 (соответствует @group(0) в шейдере)
+    // // =========== COMPUTE-ПРОХОД ===========
+    // const computePass = encoder.beginComputePass();
+    // computePass.setPipeline(computePipeline);
+    // computePass.setBindGroup(0, bindGroup);  // привязывает bind group к группе 0 (соответствует @group(0) в шейдере)
 
-    // Рассчитываем количество рабочих групп: нужно покрыть все вершины.
-    // В каждой группе 64 потока, поэтому групп = ceil(numVertices / 64).
-    const workgroupCount = Math.ceil(cloth.numVertices / 64);
-    computePass.dispatchWorkgroups(workgroupCount);
+    // // Рассчитываем количество рабочих групп: нужно покрыть все вершины.
+    // // В каждой группе 64 потока, поэтому групп = ceil(numVertices / 64).
+    // const workgroupCount = Math.ceil(cloth.numVertices / 64);
+    // computePass.dispatchWorkgroups(workgroupCount);
 
-    computePass.end();
+    // computePass.end();
     // ======================================
 
     const textureView = context.getCurrentTexture().createView();
