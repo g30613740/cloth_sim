@@ -106,6 +106,12 @@ function buildCloth(N, size) {
         }
     }
 
+    // Перемешиваем рёбра для симметричного PBD
+    for (let i = edgeData.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [edgeData[i], edgeData[j]] = [edgeData[j], edgeData[i]];
+    }
+
     const vertexArray = new Float32Array(vertices);
     const indexArray = new Uint32Array(indices);
 
@@ -210,7 +216,7 @@ const uniformData = new Float32Array([
     cloth.cornerIndices[2],   // 6
     cloth.cornerIndices[3],   // 7
     cloth.centerIndex,        // 8
-    3.0,                      // 9. amplitude
+    1.0,                      // 9. amplitude
     4.0,                      // 10. frequency
     10.0,                      // 11. numIterations (количество итераций PBD)
     canvas.width,             // canvasWidth
@@ -232,11 +238,11 @@ struct Uniforms {
     gravity: f32,
     time: f32,
     enableGravity: f32,
-    corner0: u32,
-    corner1: u32,
-    corner2: u32,
-    corner3: u32,
-    center: u32,
+    corner0: f32,
+    corner1: f32,
+    corner2: f32,
+    corner3: f32,
+    center: f32,
     amplitude: f32,
     frequency: f32,
     numIterations: f32,
@@ -327,19 +333,16 @@ const integrateShaderCode = `
 // Uniform-буфер с параметрами (одинак для всех потоков)
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
-// Буфер для ограничения нерастяжимости
-// @group(0) @binding(3) var<storage, read> edges: array<f32>;
-
 struct Uniforms {
     dt: f32,             // шаг по времени
     gravity: f32,
     time: f32,
     enableGravity: f32,  // флаг: вкл/выкл гравитация
-    corner0: u32,
-    corner1: u32,
-    corner2: u32,
-    corner3: u32,
-    center: u32,
+    corner0: f32,
+    corner1: f32,
+    corner2: f32,
+    corner3: f32,
+    center: f32,
     amplitude: f32,
     frequency: f32,
     numIterations: f32,
@@ -366,60 +369,55 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     );
 
     // === 1. Углы закреплены: пропускаем интеграцию ===
-    let isCorner = (i == uniforms.corner0 || i == uniforms.corner1 ||
-                    i == uniforms.corner2 || i == uniforms.corner3);
+    let isCorner = (i == u32(uniforms.corner0) || i == u32(uniforms.corner1) ||
+                    i == u32(uniforms.corner2) || i == u32(uniforms.corner3));
     if (isCorner) { return; }
 
     // === 2. Центральная вершина обраб отдельно, движ по закону синуса ===
-    // if (i == uniforms.center) {
-    //     // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
-    //     let basePos = vec3<f32>(
-    //         prevPositions[idx3],
-    //         prevPositions[idx3 + 1u],
-    //         prevPositions[idx3 + 2u]
-    //     );
+    if (i == u32(uniforms.center)) {
+        // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
+        let basePos = vec3<f32>(
+            prevPositions[idx3],
+            prevPositions[idx3 + 1u],
+            prevPositions[idx3 + 2u]
+        );
 
-    //     // Вычисляем смещение по Y по синусу
-    //     let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
-    //     let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
+        // Вычисляем смещение по Y по синусу
+        let offsetY = uniforms.amplitude * sin(uniforms.time * uniforms.frequency);
+        let newCenterPos = vec3<f32>(basePos.x, basePos.y + offsetY, basePos.z);
 
-    //     // Записываем новую позицию центра
-    //     vertices[idx3]      = newCenterPos.x;
-    //     vertices[idx3 + 1u] = newCenterPos.y;
-    //     vertices[idx3 + 2u] = newCenterPos.z;
+        // Записываем новую позицию центра
+        vertices[idx3]      = newCenterPos.x;
+        vertices[idx3 + 1u] = newCenterPos.y;
+        vertices[idx3 + 2u] = newCenterPos.z;
 
-    //     // Обновляем prevPositions, чтобы в следующем кадре не было рывка
-    //     prevPositions[idx3]      = newCenterPos.x;
-    //     prevPositions[idx3 + 1u] = newCenterPos.y;
-    //     prevPositions[idx3 + 2u] = newCenterPos.z;
+        // Обновляем prevPositions, чтобы в следующем кадре не было рывка
+        // prevPositions[idx3]      = newCenterPos.x;
+        // prevPositions[idx3 + 1u] = newCenterPos.y;
+        // prevPositions[idx3 + 2u] = newCenterPos.z;
 
-    //     // Завершаем обработку этой вершины
-    //     return;
-    // }
-
-    if (i == 220u) {
-        vertices[idx3 + 1u] += 0.05;
-        prevPositions[idx3 + 1u] += 0.05;
+        // Завершаем обработку этой вершины
         return;
     }
+    
     // === ОТЛАДКА центра ===
-    // if (i == uniforms.center) {
+    // if (i == u32(uniforms.center)) {
     //     // Жёсткое смещение вверх на 1.5 для проверки
     //     let basePos = vec3<f32>(vertices[idx3], vertices[idx3+1u], vertices[idx3+2u]);
     //     let newPos = vec3<f32>(basePos.x, basePos.y + 1.5, basePos.z);
     //     vertices[idx3]   = newPos.x;
     //     vertices[idx3+1u] = newPos.y;
     //     vertices[idx3+2u] = newPos.z;
-    //     prevPositions[idx3]   = newPos.x;
-    //     prevPositions[idx3+1u] = newPos.y;
-    //     prevPositions[idx3+2u] = newPos.z;
+    //     // prevPositions[idx3]   = newPos.x;
+    //     // prevPositions[idx3+1u] = newPos.y;
+    //     // prevPositions[idx3+2u] = newPos.z;
     //     return;
     // }
 
-    // // Отладка: принудительно поднимаем центр на 1.0 по Y
-    // if (i == uniforms.center) {
-    //     let pos = vertices[i];
-    //     vertices[i] = vec3<f32>(pos.x, pos.y + 1.0, pos.z);
+    // === ОТЛАДКА центра ===
+    // if (i == 220u) {
+    //     vertices[idx3 + 1u] += 0.05;
+    //     prevPositions[idx3 + 1u] += 0.05;
     //     return;
     // }
 
@@ -503,11 +501,11 @@ struct Uniforms {
     gravity: f32,
     time: f32,
     enableGravity: f32,
-    corner0: u32,
-    corner1: u32,
-    corner2: u32,
-    corner3: u32,
-    center: u32,
+    corner0: f32,
+    corner1: f32,
+    corner2: f32,
+    corner3: f32,
+    center: f32,
     amplitude: f32,
     frequency: f32,
     numIterations: f32,
@@ -547,12 +545,12 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     let correctionVec = delta * correction;
 
     // Проверяем, закреплена ли вершина (угол или центр)
-    let isPinnedI = (i == uniforms.corner0 || i == uniforms.corner1 || 
-                     i == uniforms.corner2 || i == uniforms.corner3 || 
-                     i == uniforms.center);
-    let isPinnedJ = (j == uniforms.corner0 || j == uniforms.corner1 || 
-                     j == uniforms.corner2 || j == uniforms.corner3 || 
-                     j == uniforms.center);
+    let isPinnedI = (i == u32(uniforms.corner0) || i == u32(uniforms.corner1) || 
+                     i == u32(uniforms.corner2) || i == u32(uniforms.corner3) || 
+                     i == u32(uniforms.center));
+    let isPinnedJ = (j == u32(uniforms.corner0) || j == u32(uniforms.corner1) || 
+                     j == u32(uniforms.corner2) || j == u32(uniforms.corner3) || 
+                     j == u32(uniforms.center));
     
     // Применяем коррекцию и синхронизируем prevPositions
     if (isPinnedI && isPinnedJ) {
@@ -612,11 +610,30 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
 const syncPrevShaderCode = `
 @group(0) @binding(0) var<storage, read> vertices: array<f32>;
 @group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
+@group(0) @binding(3) var<uniform> uniforms: Uniforms;
+
+struct Uniforms {
+    dt: f32,
+    gravity: f32,
+    time: f32,
+    enableGravity: f32,
+    corner0: f32,
+    corner1: f32,
+    corner2: f32,
+    corner3: f32,
+    center: f32,
+    amplitude: f32,
+    frequency: f32,
+    numIterations: f32,
+    canvasWidth: f32,
+    canvasHeight: f32,
+};
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
+    if (i == u32(uniforms.center)) { return; }  // центр не синхронизируем
     let idx3 = i * 3u;
     prevPositions[idx3]   = vertices[idx3];
     prevPositions[idx3+1u] = vertices[idx3+1u];
@@ -624,10 +641,122 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
-// Создаём модули шейдеров
+// ==============================================================================
+// COMPUTE-ШЕЙДЕР 4: Решение ограничений (PBD constraints) в обратном направлении
+// ==============================================================================
+
+// добавляю из-за асимметрии
+// проход в обратном направлении
+
+const solveReverseShaderCode = `
+@group(0) @binding(0) var<storage, read_write> vertices: array<f32>;
+@group(0) @binding(2) var<storage, read> edges: array<f32>;
+@group(0) @binding(3) var<uniform> uniforms: Uniforms;
+
+struct Uniforms {
+    dt: f32,
+    gravity: f32,
+    time: f32,
+    enableGravity: f32,
+    corner0: f32,
+    corner1: f32,
+    corner2: f32,
+    corner3: f32,
+    center: f32,
+    amplitude: f32,
+    frequency: f32,
+    numIterations: f32,
+    canvasWidth: f32,
+    canvasHeight: f32,
+};
+
+@compute @workgroup_size(64)
+fn solveConstraintsReverse(@builtin(global_invocation_id) id: vec3<u32>) {
+    let totalEdges = arrayLength(&edges) / 3u;
+    if (id.x >= totalEdges) { return; }    // underflow защита
+    let edgeIdx = totalEdges - 1u - id.x;  // обратный порядок
+    if (edgeIdx * 3u + 2u >= arrayLength(&edges)) { return; }
+
+    let eIdx3 = edgeIdx * 3u;
+    let i = u32(edges[eIdx3]);
+    let j = u32(edges[eIdx3 + 1u]);
+    let restLength = edges[eIdx3 + 2u];
+
+    // весь остальной код точно как в solveShaderCode, включая коррекцию и проверки isPinnedI/J
+    let i3 = i * 3u;
+    let j3 = j * 3u;
+
+    let posI = vec3<f32>(vertices[i3], vertices[i3+1u], vertices[i3+2u]);
+    let posJ = vec3<f32>(vertices[j3], vertices[j3+1u], vertices[j3+2u]);
+    
+    // вектор между вершинами и его длина
+    let delta = posI - posJ;
+    let currentLength = length(delta);
+    if (currentLength < 0.0001) { return; } // защита от деления на ноль (совпадение вершин)
+    
+    // === PBD: коррекция позиций для соблюдения ограничения длины ===
+    // Формула: correction = (currentLength - restLength) / currentLength * 0.5
+    // Делим на 2, чтобы сдвинуть обе вершины навстречу друг другу
+    
+    let correction = (currentLength - restLength) / currentLength * 0.5;
+    let correctionVec = delta * correction;
+
+    // Проверяем, закреплена ли вершина (угол или центр)
+    let isPinnedI = (i == u32(uniforms.corner0) || i == u32(uniforms.corner1) || 
+                     i == u32(uniforms.corner2) || i == u32(uniforms.corner3) || 
+                     i == u32(uniforms.center));
+    let isPinnedJ = (j == u32(uniforms.corner0) || j == u32(uniforms.corner1) || 
+                     j == u32(uniforms.corner2) || j == u32(uniforms.corner3) || 
+                     j == u32(uniforms.center));
+    
+    // Применяем коррекцию и синхронизируем prevPositions
+    if (isPinnedI && isPinnedJ) {
+        // ничего не делаем
+    } else if (isPinnedI) {
+        let newJ = posJ + correctionVec * 2.0;
+        vertices[j3]   = newJ.x;
+        vertices[j3+1u] = newJ.y;
+        vertices[j3+2u] = newJ.z;
+        // prevPositions[j3]   = newJ.x;
+        // prevPositions[j3+1u] = newJ.y;
+        // prevPositions[j3+2u] = newJ.z;
+    } else if (isPinnedJ) {
+        let newI = posI - correctionVec * 2.0;
+        vertices[i3]   = newI.x;
+        vertices[i3+1u] = newI.y;
+        vertices[i3+2u] = newI.z;
+        // prevPositions[i3]   = newI.x;
+        // prevPositions[i3+1u] = newI.y;
+        // prevPositions[i3+2u] = newI.z;
+    } else {
+        let newI = posI - correctionVec;
+        let newJ = posJ + correctionVec;
+        vertices[i3]   = newI.x;
+        vertices[i3+1u] = newI.y;
+        vertices[i3+2u] = newI.z;
+        vertices[j3]   = newJ.x;
+        vertices[j3+1u] = newJ.y;
+        vertices[j3+2u] = newJ.z;
+
+        // prevPositions[i3]   = newI.x;
+        // prevPositions[i3+1u] = newI.y;
+        // prevPositions[i3+2u] = newI.z;
+        // prevPositions[j3]   = newJ.x;
+        // prevPositions[j3+1u] = newJ.y;
+        // prevPositions[j3+2u] = newJ.z;
+    }
+}
+`;
+
+
+// ===============
+// SHAVER-MODULES:
+// ===============
+
 const integrateModule = device.createShaderModule({ code: integrateShaderCode });
 const solveModule = device.createShaderModule({ code: solveShaderCode });
 const syncPrevModule = device.createShaderModule({ code: syncPrevShaderCode });
+const solveReverseModule = device.createShaderModule({ code: solveReverseShaderCode });
 
 
 // ==================
@@ -655,13 +784,23 @@ const solvePipeline = device.createComputePipeline({
 // 3. syncPrevPipeline - для синхронизации движения
 const syncPrevPipeline = device.createComputePipeline({
     layout: 'auto',
-    compute: { module: syncPrevModule, entryPoint: 'main' },
+    compute: {
+        module: syncPrevModule, 
+        entryPoint: 'main' },
+});
+
+// 4. solveReversePipeline - для обратного прохода ограничения длин
+const solveReversePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { 
+        module: solveReverseModule,
+        entryPoint: 'solveConstraintsReverse' },
 });
 
 
-// ===========
-// BIND-GROUPS
-// ===========
+// ============
+// BIND-GROUPS:
+// ============
 
 // 1. Bind group для интеграции (нужны vertices, prevPositions, uniforms)
 const integrateBindGroup = device.createBindGroup({
@@ -690,6 +829,18 @@ const syncPrevBindGroup = device.createBindGroup({
     entries: [
         { binding: 0, resource: { buffer: vertexBuffer } },
         { binding: 1, resource: { buffer: prevPosBuffer } },
+        { binding: 3, resource: { buffer: uniformBuffer } },
+    ],
+});
+
+// 4. Bind group для обратного прохода
+const solveReverseBindGroup = device.createBindGroup({
+    layout: solveReversePipeline.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: vertexBuffer } },
+        // { binding: 1, resource: { buffer: prevPosBuffer } },
+        { binding: 2, resource: { buffer: edgeBuffer } },
+        { binding: 3, resource: { buffer: uniformBuffer } },
     ],
 });
 
@@ -732,6 +883,7 @@ function frame() {
     
     // console.log('time =', time);
     // console.log('centerIndex from cloth:', cloth.centerIndex);
+    // console.log('corners:', cloth.cornerIndices)
     // console.log('uniformData[9]:', uniformData[9]);
     // console.log('uniformData:', uniformData);
 
@@ -751,25 +903,32 @@ function frame() {
     computePass1.dispatchWorkgroups(vertexWorkgroupCount);
     computePass1.end();
     
-    // // ===========================================
-    // // COMPUTE-ПРОХОД 2: Решение ограничений (PBD)
-    // // ===========================================
-    // const computePass2 = encoder.beginComputePass();
-    // computePass2.setPipeline(solvePipeline);
-    // computePass2.setBindGroup(0, solveBindGroup);
-    
-    // // Читаем количество итераций из uniformData[11]
-    // const numIterations = Math.floor(uniformData[11]);
-    
-    // // Запускаем решение ограничений несколько раз
-    // // Чем больше итераций, тем жёстче ткань
-    // const edgeWorkgroupCount = Math.ceil(cloth.numEdges / 64);
-    // for (let iter = 0; iter < numIterations; iter++) {
-    //     computePass2.dispatchWorkgroups(edgeWorkgroupCount);
-    // }
-    // computePass2.end();
+    // ===========================================
+    // COMPUTE-ПРОХОД 2: Решение ограничений (PBD)
+    // ===========================================
+    const computePass2 = encoder.beginComputePass();
 
-    // // Синхронизация prevPositions
+    // Читаем количество итераций из uniformData[11]
+    const numIterations = Math.floor(uniformData[11]);
+    const edgeWorkgroupCount = Math.ceil(cloth.numEdges / 64);
+
+    for (let iter = 0; iter < numIterations; iter++) {
+        // Прямой проход
+        computePass2.setPipeline(solvePipeline);
+        computePass2.setBindGroup(0, solveBindGroup);
+        computePass2.dispatchWorkgroups(edgeWorkgroupCount);
+
+        // Обратный проход
+        // computePass2.setPipeline(solveReversePipeline);
+        // computePass2.setBindGroup(0, solveReverseBindGroup);
+        // computePass2.dispatchWorkgroups(edgeWorkgroupCount);
+    }
+
+    computePass2.end();
+
+    // // ==============================================
+    // // COMPUTE-ПРОХОД 3: Синхронизация prevPositions)
+    // // ==============================================
     // const computePass3 = encoder.beginComputePass();
     // computePass3.setPipeline(syncPrevPipeline);
     // computePass3.setBindGroup(0, syncPrevBindGroup);
