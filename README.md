@@ -1,63 +1,43 @@
-<h1>Симуляция ткани на WebGPU + PBD</h1>
+<h1>Cloth Simulation with Position Based Dynamics (WebGPU)</h1>
 
-<p>
-  <strong>Технологии:</strong> WebGPU, WGSL, PBD, JavaScript<br>
-  <strong>Автор:</strong> @g30613740<br>
-  <strong>Репозиторий:</strong> <a href="https://github.com/g30613740/cloth_sim">https://github.com/g30613740/cloth_sim</a>
-</p>
+<p>A real-time cloth simulation built with <strong>WebGPU</strong> and <strong>Position Based Dynamics (PBD)</strong>.  
+The cloth is a square grid of triangles, pinned at its four corners, with a central vertex oscillating vertically to create visible waves.  
+Gravity can be toggled via a checkbox, affecting all free vertices.</p>
 
-<hr>
+<img src="picture.png" alt="Cloth simulation screenshot" width="800"/>
 
-<h2>Описание</h2>
-<p>
-  Этот проект реализует интерактивную симуляцию ткани с использованием метода Position Based Dynamics (PBD) и рендеринга через WebGPU (без сторонних движков).<br>
-  Ткань представлена сеткой из треугольников, углы которой закреплены, а центральная вершина колеблется по синусу, создавая волны. Также реализован чекбокс для включения/отключения гравитации.
-</p>
+<h2>Features</h2>
+<ul>
+  <li>Pure WebGPU – no third-party rendering engines (Three.js, Babylon, etc.)</li>
+  <li>Position Based Dynamics solver with distance constraints (horizontal, vertical, both diagonals)</li>
+  <li>Verlet integration with gravity toggle</li>
+  <li>4 pinned corners and a sinusoidally driven central point</li>
+  <li>Real-time normal recalculation and simple Lambert shading</li>
+  <li>HTML/CSS/JavaScript only – runs in a modern browser</li>
+</ul>
 
-<h2>Запуск</h2>
-<p>Для работы необходим браузер с поддержкой WebGPU (я использую <strong>Chrome Canary</strong> с включёнными флагами <code>#enable-unsafe-webgpu</code>).</p>
+<h2>Getting Started</h2>
 <ol>
-  <li>Клонируйте репозиторий:
-    <pre>git clone https://github.com/g30613740/cloth_sim.git</pre>
-  </li>
-  <li>Перейдите в папку проекта и запустите локальный веб-сервер (например, <strong>Live Server</strong> в VS Code или <code>npx serve</code>).</li>
-  <li>Откройте <code>http://localhost:5500</code> в браузере.</li>
+  <li>Clone the repository:<br>
+      <code>git clone https://github.com/g30613740/cloth_sim.git</code></li>
+  <li>Open <code>index.html</code> in a browser that supports WebGPU (Chrome 113+, Edge 113+, or Firefox Nightly with <code>dom.webgpu.enabled</code>).</li>
+  <li>Allow the page to access your GPU.</li>
 </ol>
-<p>Если вы используете Chrome Canary, убедитесь, что включены флаги <code>#enable-unsafe-webgpu</code> и <code>#enable-webgpu-developer-features</code>.</p>
 
-<h2>Текущий статус реализации</h2>
+<h2>Controls</h2>
 <ul>
-  <li><input type="checkbox" checked disabled> Инициализация WebGPU</li>
-  <li><input type="checkbox" checked disabled> Отрисовка треугольника (проверка)</li>
-  <li><input type="checkbox" checked disabled> Генерация сетки ткани (каркас)</li>
-  <li><input type="checkbox" checked disabled> Подготовка буферов для симуляции (prevPos, edgeData, uniform)</li>
-  <li><input type="checkbox" disabled> Реализация compute-шейдера (PBD)</li>
-  <li><input type="checkbox" disabled> Управление гравитацией</li>
-  <li><input type="checkbox" disabled> Анимация центральной вершины</li>
+  <li><strong>Gravity checkbox</strong> – enables/disables downward gravity acceleration (9.8 m/s<sup>2</sup>). When off, the cloth remains flat except for the moving center.</li>
 </ul>
 
-<h2>Структура проекта</h2>
+<h2>Implementation Details</h2>
 <ul>
-  <li><code>index.html</code> – точка входа, UI (canvas и чекбокс)</li>
-  <li><code>main.js</code> – основной код на JavaScript: инициализация WebGPU, шейдеры, буферы, пайплайн, цикл анимации</li>
-  <li><code>README.md</code> – описание проекта</li>
-  <li><code>.gitignore</code> – список игнорируемых файлов</li>
+  <li><strong>Cloth mesh:</strong> 20×20 quads, each split into two triangles.</li>
+  <li><strong>PBD constraints:</strong> horizontal, vertical, and both diagonal edges; edges are shuffled for symmetric wave propagation.</li>
+  <li><strong>Numerical method:</strong> Verlet integration (velocity-free) with optional gravity term.</li>
+  <li><strong>Normals:</strong> computed every frame on the GPU using cross product of triangle edges.</li>
+  <li><strong>Rendering:</strong> one draw call for shaded triangles (<code>triangle-list</code>), another for white wireframe lines (<code>line-list</code>). Back-face culling is disabled.</li>
+  <li><strong>Coordinate system:</strong> cloth lies in the XZ plane (Y up), rotated isometrically for a 3/4 view.</li>
 </ul>
 
-<h2>Технические детали</h2>
-<ul>
-  <li><strong>Рендеринг:</strong> WebGPU (контекст canvas, пайплайн, вершинный и фрагментный шейдеры на WGSL)</li>
-  <li><strong>Симуляция:</strong> PBD с Verlet-интеграцией, ограничения на длины рёбер, итеративная коррекция</li>
-  <li><strong>Визуализация:</strong> каркас сетки (line-list), в будущем – заливка треугольников</li>
-</ul>
-
-<h2>Планы по развитию</h2>
-<ul>
-  <li>Реализация compute-шейдера для PBD на GPU</li>
-  <li>Динамическое изменение центральной вершины по синусу</li>
-  <li>Чекбокс «Включить гравитацию»</li>
-  <li>Интерактивное перетаскивание вершин (опционально)</li>
-</ul>
-
-<h2>Лицензия</h2>
-<p>Проект распространяется под лицензией <strong>MIT</strong>.</p>
+<h2>License</h2>
+<p>MIT</p>
