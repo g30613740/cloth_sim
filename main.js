@@ -69,8 +69,9 @@ function buildCloth(N, size) {
     for (let j = 0; j <= N; j++) {
         for (let i = 0; i <= N; i++) {
             const x = -half + i * step;
-            const y = -half + j * step;
-            vertices.push(x, y, 0.0);
+            // const y = -half + j * step;
+            const z = -half + j * step;
+            vertices.push(x, 0.0, z);
         }
     }
 
@@ -224,24 +225,9 @@ const edgeBuffer = device.createBuffer({
 });
 device.queue.writeBuffer(edgeBuffer, 0, cloth.edges);
 
-// 4.3. Uniform-буфер (параметры симуляции)
-// Структура в WGSL: 
-// struct Uniforms {
-//     dt: f32,
-//     gravity: f32,
-//     time: f32,
-//     numIterations: u32,
-//     enableGravity: u32,
-//     corner0: u32, corner1: u32, corner2: u32, corner3: u32,
-//     center: u32,
-//     amplitude: f32,
-//     frequency: f32,
-// };
 
-// Выравнивание: каждое поле должно быть выровнено по 4 байтам.
-// Для простоты использую массив из 16 float (64 байта).
 const uniformData = new Float32Array([
-    0.0002,                    // 0. dt (шаг по времени)
+    0.001,                   // 0. dt (шаг по времени)
     9.8,                      // 1. gravity
     0.0,                      // 2. time (будет обновляться в  frame())
     0.0,                      // 3. enableGravity (1 - вкл, 0 - выкл)
@@ -251,8 +237,8 @@ const uniformData = new Float32Array([
     cloth.cornerIndices[3],   // 7
     cloth.centerIndex,        // 8
     1.0,                      // 9. amplitude
-    4.0,                      // 10. frequency
-    30.0,                      // 11. numIterations (количество итераций PBD)
+    2.0,                      // 10. frequency
+    5.0,                     // 11. numIterations (количество итераций PBD)
     canvas.width,             // canvasWidth
     canvas.height             // canvasHeight
 ]);
@@ -379,10 +365,10 @@ struct VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let lightDir = normalize(vec3<f32>(0.5, 1.0, 0.3));
-    let ambient = 0.4;
+    let lightDir = normalize(vec3<f32>(0.4, 1.0, 0.2));
+    let ambient = 0.55;
     let diff = max(dot(normalize(in.normal), lightDir), 0.0);
-    let color = vec3<f32>(0.7, 0.7, 0.8) * (ambient + diff);
+    let color = vec3<f32>(0.85, 0.85, 0.95) * (ambient + diff);
     return vec4<f32>(color, 1.0);
 }`;
 
@@ -513,6 +499,30 @@ const trianglePipeline = device.createRenderPipeline({
     primitive: { topology: 'triangle-list', cullMode: 'none' }
 });
 
+// Пайплайн для отрисовки линий
+const linePipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+        module: vsLightModule,   // тот же вершинный шейдер, но нормали не нужны
+        entryPoint: 'vs_main',
+        buffers: [
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] }
+        ]
+    },
+    fragment: {
+        module: device.createShaderModule({ code: `
+            @fragment
+            fn fs_main() -> @location(0) vec4<f32> {
+                return vec4<f32>(0.95, 0.95, 0.95, 1.0); // почти белые линии
+            }
+        ` }),
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+    },
+    primitive: { topology: 'line-list', cullMode: 'none' }
+});
+
 // ============================================================
 // COMPUTE-ШЕЙДЕР 1: Verlet-интеграция (обновление позиций)
 // ============================================================
@@ -632,8 +642,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     // Verlet-интеграция (для неугловых вершин): newPos = 2*pos - prev + accel * dt^2
-    let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
-          
+    // let newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+    var newPos = pos;
+    if (uniforms.enableGravity > 0.5) {
+        newPos = pos * 2.0 - prev + accel * uniforms.dt * uniforms.dt;
+    }
+
     // сохраняем старую позицию как "предыдущую" для следующего шага
     prevPositions[idx3]      = pos.x;
     prevPositions[idx3 + 1u] = pos.y;
@@ -1063,6 +1077,14 @@ const computeNormalsBindGroup = device.createBindGroup({
     ]
 });
 
+// bind для отрисовки линий
+const lineBindGroup = device.createBindGroup({
+    layout: linePipeline.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } }
+    ]
+});
+
 // // отладка для проверки движения сетки
 // const bindGroup = device.createBindGroup({
 //     layout: computePipeline.getBindGroupLayout(0),
@@ -1181,6 +1203,15 @@ function frame() {
     renderPass.setIndexBuffer(triangleIndexBuffer, 'uint32');
     renderPass.setBindGroup(0, renderBindGroup);
     renderPass.drawIndexed(cloth.triangleIndices.length);
+
+    // Рисуем линии поверх треугольников
+    renderPass.setPipeline(linePipeline);
+    renderPass.setVertexBuffer(0, vertexBuffer);
+    renderPass.setVertexBuffer(1, normalBuffer); // не используется, но нужно для совместимости макета
+    renderPass.setIndexBuffer(indexBuffer, 'uint32');
+    renderPass.setBindGroup(0, lineBindGroup);
+    renderPass.drawIndexed(cloth.indices.length);
+
     renderPass.end();
     
     // Отправляем все команды на GPU
