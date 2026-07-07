@@ -106,6 +106,22 @@ function buildCloth(N, size) {
         }
     }
 
+    // Диагональные рёбра (каждый квадрат – два треугольника)
+    const triangleIndices = []; // для рендера треугольников
+    for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+            const v00 = idx(i, j);
+            const v10 = idx(i+1, j);
+            const v01 = idx(i, j+1);
+            const v11 = idx(i+1, j+1);
+            // Диагональ от (i,j) к (i+1,j+1)
+            addEdge(v00, v11);
+            addEdge(v10, v01);   // противоположная диагональ (симметрия)
+            // Индексы двух треугольников: (v00, v10, v11) и (v00, v11, v01)
+            triangleIndices.push(v00, v10, v11, v00, v11, v01);
+        }
+    }
+
     // Перемешиваем рёбра для симметричного PBD
     for (let i = edgeData.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -125,7 +141,8 @@ function buildCloth(N, size) {
 
     return {
         vertices: vertexArray,
-        indices: indexArray,
+        indices: indexArray,     // линии уже можно не использовать
+        triangleIndices: new Uint32Array(triangleIndices), // треугольники
         edges: edgeArray,          // плоский массив для GPU
         numVertices: (N + 1) * (N + 1),
         numEdges: edgeData.length,
@@ -172,6 +189,23 @@ const indexBuffer = device.createBuffer({
 });
 device.queue.writeBuffer(indexBuffer, 0, cloth.indices);
 
+
+
+// Буфер для треугольников
+const triangleIndexBuffer = device.createBuffer({
+    size: cloth.triangleIndices.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+});
+device.queue.writeBuffer(triangleIndexBuffer, 0, cloth.triangleIndices);
+
+// Буфер нормалей
+const normalBuffer = device.createBuffer({
+    size: cloth.vertices.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
+});
+// Изначально заполним нулями (позже будем вычислять)
+device.queue.writeBuffer(normalBuffer, 0, new Float32Array(cloth.vertices.length));
+
 // ============================================================
 // 4. Буферы для симуляции (предыдущие позиции, рёбра, uniform)
 // ============================================================
@@ -207,7 +241,7 @@ device.queue.writeBuffer(edgeBuffer, 0, cloth.edges);
 // Выравнивание: каждое поле должно быть выровнено по 4 байтам.
 // Для простоты использую массив из 16 float (64 байта).
 const uniformData = new Float32Array([
-    0.001,                    // 0. dt (шаг по времени)
+    0.0002,                    // 0. dt (шаг по времени)
     9.8,                      // 1. gravity
     0.0,                      // 2. time (будет обновляться в  frame())
     0.0,                      // 3. enableGravity (1 - вкл, 0 - выкл)
@@ -218,7 +252,7 @@ const uniformData = new Float32Array([
     cloth.centerIndex,        // 8
     1.0,                      // 9. amplitude
     4.0,                      // 10. frequency
-    10.0,                      // 11. numIterations (количество итераций PBD)
+    30.0,                      // 11. numIterations (количество итераций PBD)
     canvas.width,             // canvasWidth
     canvas.height             // canvasHeight
 ]);
@@ -232,6 +266,63 @@ device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 // ============================================================
 // 5. Шейдеры
 // ============================================================
+
+// старый вершинный шейдер
+// const vertexShaderCode = `
+// struct Uniforms {
+//     dt: f32,
+//     gravity: f32,
+//     time: f32,
+//     enableGravity: f32,
+//     corner0: f32,
+//     corner1: f32,
+//     corner2: f32,
+//     corner3: f32,
+//     center: f32,
+//     amplitude: f32,
+//     frequency: f32,
+//     numIterations: f32,
+//     canvasWidth: f32,
+//     canvasHeight: f32,
+// };
+
+// @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+// @vertex
+// fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
+
+//     // Изометрический поворот вокруг X
+//     let angle = 0.5;
+//     let cosA = cos(angle);
+//     let sinA = sin(angle);
+//     var p = vec3<f32>(pos.x, pos.y * cosA - pos.z * sinA, pos.y * sinA + pos.z * cosA);
+    
+//     // Масштаб, чтобы ткань занимала примерно 80% высоты экрана
+//     let desiredHeight = 0.8;
+//     let clothHalfHeight = 1.0 * cosA; // половина высоты ткани после поворота (max |y|)
+//     let scale = desiredHeight / clothHalfHeight;
+    
+//     // Корректировка по X с учётом aspect ratio
+//     let aspect = uniforms.canvasWidth / uniforms.canvasHeight;
+//     var xNDC = p.x * scale / aspect;
+//     var yNDC = p.y * scale;
+    
+//     // Опускаем камеру немного вниз, чтобы видеть верхнюю часть ткани
+//     // (опционально, зависит от желаемого ракурса)
+//     // yNDC -= 0.1;
+    
+//     return vec4<f32>(xNDC, yNDC, 0.0, 1.0);
+// }
+// `;
+
+// Старый фрагментный шейдер
+// const fragmentShaderCode = `
+// @fragment
+// fn fs_main() -> @location(0) vec4<f32> {
+//     return vec4<f32>(0.8, 0.8, 0.8, 1.0); // Светло-серые линии
+// }
+// `;
+
 const vertexShaderCode = `
 struct Uniforms {
     dt: f32,
@@ -252,70 +343,174 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
-@vertex
-fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
+struct VertexOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+};
 
-    // Изометрический поворот вокруг X
+@vertex
+fn vs_main(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>) -> VertexOutput {
+    var out: VertexOutput;
     let angle = 0.5;
     let cosA = cos(angle);
     let sinA = sin(angle);
+    // Поворот позиции (тот же, что и раньше)
     var p = vec3<f32>(pos.x, pos.y * cosA - pos.z * sinA, pos.y * sinA + pos.z * cosA);
-    
-    // Масштаб, чтобы ткань занимала примерно 80% высоты экрана
     let desiredHeight = 0.8;
-    let clothHalfHeight = 1.0 * cosA; // половина высоты ткани после поворота (max |y|)
+    let clothHalfHeight = 1.0 * cosA;
     let scale = desiredHeight / clothHalfHeight;
-    
-    // Корректировка по X с учётом aspect ratio
     let aspect = uniforms.canvasWidth / uniforms.canvasHeight;
-    var xNDC = p.x * scale / aspect;
-    var yNDC = p.y * scale;
+    out.pos = vec4<f32>(p.x * scale / aspect, p.y * scale, 0.0, 1.0);
     
-    // Опускаем камеру немного вниз, чтобы видеть верхнюю часть ткани
-    // (опционально, зависит от желаемого ракурса)
-    // yNDC -= 0.1;
-    
-    return vec4<f32>(xNDC, yNDC, 0.0, 1.0);
-}
-`;
+    // Поворот нормали (та же матрица, так как это чистое вращение)
+    out.normal = vec3<f32>(normal.x, normal.y * cosA - normal.z * sinA, normal.y * sinA + normal.z * cosA);
+
+    // ОТЛАДКА: игнорируем входную нормаль, задаём константу (0,0,1)
+    // out.normal = vec3<f32>(0.0, 0.0, 1.0);
+
+    return out;
+}`;
 
 const fragmentShaderCode = `
+struct VertexOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+};
+
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.8, 0.8, 0.8, 1.0); // Светло-серые линии
-}
-`;
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let lightDir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+    let ambient = 0.4;
+    let diff = max(dot(normalize(in.normal), lightDir), 0.0);
+    let color = vec3<f32>(0.7, 0.7, 0.8) * (ambient + diff);
+    return vec4<f32>(color, 1.0);
+}`;
+
+
+// DEBUGGING 1
+// const fragmentShaderCode = `
+// struct VertexOutput {
+//     @builtin(position) pos: vec4<f32>,
+//     @location(0) normal: vec3<f32>,
+// };
+
+// @fragment
+// fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+//     // Отображаем абсолютные значения нормали (чёрный = (0,0,0) или постоянная)
+//     return vec4<f32>(abs(in.normal), 1.0);
+// }`;
+
+// DEBUGGING 2
+// const fragmentShaderCode = `
+// struct VertexOutput {
+//     @builtin(position) pos: vec4<f32>,
+//     @location(0) normal: vec3<f32>,
+// };
+
+// @fragment
+// fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+//     let n = normalize(in.normal);
+//     return vec4<f32>(n * 0.5 + 0.5, 1.0); // нормаль в диапазоне [0,1]
+// }`;
+
+// ===============================
+// === Шейдер для расчёта нормалей
+// ===============================
+
+const computeNormalsShaderCode = `
+// по трём вершинам вычисляет нормаль (через векторное произведение)
+// и записывает её в буфер нормалей для всех трёх вершин
+@group(0) @binding(0) var<storage, read> vertices: array<f32>;
+@group(0) @binding(1) var<storage, read_write> normals: array<f32>;
+@group(0) @binding(2) var<storage, read> triIndices: array<u32>; // uint32 индексы треугольников
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let triCount = arrayLength(&triIndices) / 3u;
+    if (id.x >= triCount) { return; }
+    let i0 = triIndices[id.x * 3u];
+    let i1 = triIndices[id.x * 3u + 1u];
+    let i2 = triIndices[id.x * 3u + 2u];
+    
+    let p0 = vec3<f32>(vertices[i0*3u], vertices[i0*3u+1u], vertices[i0*3u+2u]);
+    let p1 = vec3<f32>(vertices[i1*3u], vertices[i1*3u+1u], vertices[i1*3u+2u]);
+    let p2 = vec3<f32>(vertices[i2*3u], vertices[i2*3u+1u], vertices[i2*3u+2u]);
+    
+    let n = normalize(cross(p1 - p0, p2 - p0));
+    
+    normals[i0*3u] = n.x; normals[i0*3u+1u] = n.y; normals[i0*3u+2u] = n.z;
+    normals[i1*3u] = n.x; normals[i1*3u+1u] = n.y; normals[i1*3u+2u] = n.z;
+    normals[i2*3u] = n.x; normals[i2*3u+1u] = n.y; normals[i2*3u+2u] = n.z;
+}`;
+
+
+// Отладрчный шейдер нормалей (принудительно чисто зелёный)
+// const computeNormalsShaderCode = `
+// // @group(0) @binding(0) var<storage, read> vertices: array<f32>;
+// @group(0) @binding(1) var<storage, read_write> normals: array<f32>;
+// // @group(0) @binding(2) var<storage, read> triIndices: array<u32>;
+
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let idx = id.x;
+//     if (idx * 3u + 2u >= arrayLength(&normals)) { return; }
+//     normals[idx*3u] = 0.0;
+//     normals[idx*3u+1u] = 1.0;
+//     normals[idx*3u+2u] = 0.0;
+// }`;
 
 // ============================================================
 // 6. Пайплайн рендеринга
 // ============================================================
-const pipeline = device.createRenderPipeline({
+// старый пайплайн рендеринга
+// const pipeline = device.createRenderPipeline({
+//     layout: 'auto',
+//     vertex: {
+//         module: device.createShaderModule({ code: vertexShaderCode }),
+//         entryPoint: 'vs_main',
+//         buffers: [
+//             {
+//                 // шаг для перехода к следующей вершине
+//                 arrayStride: 3 * 4, // 3 float по 4 байта
+//                 attributes: [
+//                     {
+//                         shaderLocation: 0,
+//                         offset: 0,
+//                         format: 'float32x3',
+//                     },
+//                 ],
+//             },
+//         ],
+//     },
+//     fragment: {
+//         module: device.createShaderModule({ code: fragmentShaderCode }),
+//         entryPoint: 'fs_main',
+//         targets: [{ format }],
+//     },
+//     primitive: {
+//         topology: 'line-list', // Рисуем линии (каждые 2 индекса – отрезок)
+//     },
+// });
+
+const vsLightModule = device.createShaderModule({ code: vertexShaderCode });
+const fsLightModule = device.createShaderModule({ code: fragmentShaderCode });
+
+const trianglePipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex: {
-        module: device.createShaderModule({ code: vertexShaderCode }),
+        module: vsLightModule,
         entryPoint: 'vs_main',
         buffers: [
-            {
-                // шаг для перехода к следующей вершине
-                arrayStride: 3 * 4, // 3 float по 4 байта
-                attributes: [
-                    {
-                        shaderLocation: 0,
-                        offset: 0,
-                        format: 'float32x3',
-                    },
-                ],
-            },
-        ],
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] }
+        ]
     },
     fragment: {
-        module: device.createShaderModule({ code: fragmentShaderCode }),
+        module: fsLightModule,
         entryPoint: 'fs_main',
         targets: [{ format }],
     },
-    primitive: {
-        topology: 'line-list', // Рисуем линии (каждые 2 индекса – отрезок)
-    },
+    primitive: { topology: 'triangle-list', cullMode: 'none' }
 });
 
 // ============================================================
@@ -603,43 +798,42 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
 // }
 // `;
 
-// =============================================
-// COMPUTE-ШЕЙДЕР 3: синхронизация prevPositions
-// =============================================
+// // =============================================
+// // COMPUTE-ШЕЙДЕР 3: синхронизация prevPositions
+// // =============================================
+// const syncPrevShaderCode = `
+// @group(0) @binding(0) var<storage, read> vertices: array<f32>;
+// @group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
+// @group(0) @binding(3) var<uniform> uniforms: Uniforms;
 
-const syncPrevShaderCode = `
-@group(0) @binding(0) var<storage, read> vertices: array<f32>;
-@group(0) @binding(1) var<storage, read_write> prevPositions: array<f32>;
-@group(0) @binding(3) var<uniform> uniforms: Uniforms;
+// struct Uniforms {
+//     dt: f32,
+//     gravity: f32,
+//     time: f32,
+//     enableGravity: f32,
+//     corner0: f32,
+//     corner1: f32,
+//     corner2: f32,
+//     corner3: f32,
+//     center: f32,
+//     amplitude: f32,
+//     frequency: f32,
+//     numIterations: f32,
+//     canvasWidth: f32,
+//     canvasHeight: f32,
+// };
 
-struct Uniforms {
-    dt: f32,
-    gravity: f32,
-    time: f32,
-    enableGravity: f32,
-    corner0: f32,
-    corner1: f32,
-    corner2: f32,
-    corner3: f32,
-    center: f32,
-    amplitude: f32,
-    frequency: f32,
-    numIterations: f32,
-    canvasWidth: f32,
-    canvasHeight: f32,
-};
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
-    if (i == u32(uniforms.center)) { return; }  // центр не синхронизируем
-    let idx3 = i * 3u;
-    prevPositions[idx3]   = vertices[idx3];
-    prevPositions[idx3+1u] = vertices[idx3+1u];
-    prevPositions[idx3+2u] = vertices[idx3+2u];
-}
-`;
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let i = id.x;
+//     if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
+//     if (i == u32(uniforms.center)) { return; }  // центр не синхронизируем
+//     let idx3 = i * 3u;
+//     prevPositions[idx3]   = vertices[idx3];
+//     prevPositions[idx3+1u] = vertices[idx3+1u];
+//     prevPositions[idx3+2u] = vertices[idx3+2u];
+// }
+// `;
 
 // ==============================================================================
 // COMPUTE-ШЕЙДЕР 4: Решение ограничений (PBD constraints) в обратном направлении
@@ -750,13 +944,14 @@ fn solveConstraintsReverse(@builtin(global_invocation_id) id: vec3<u32>) {
 
 
 // ===============
-// SHAVER-MODULES:
+// SHADER-MODULES:
 // ===============
 
 const integrateModule = device.createShaderModule({ code: integrateShaderCode });
 const solveModule = device.createShaderModule({ code: solveShaderCode });
-const syncPrevModule = device.createShaderModule({ code: syncPrevShaderCode });
+// const syncPrevModule = device.createShaderModule({ code: syncPrevShaderCode });
 const solveReverseModule = device.createShaderModule({ code: solveReverseShaderCode });
+const computeNormalsModule = device.createShaderModule({ code: computeNormalsShaderCode });
 
 
 // ==================
@@ -781,13 +976,13 @@ const solvePipeline = device.createComputePipeline({
     },
 });
 
-// 3. syncPrevPipeline - для синхронизации движения
-const syncPrevPipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: {
-        module: syncPrevModule, 
-        entryPoint: 'main' },
-});
+// // 3. syncPrevPipeline - для синхронизации движения
+// const syncPrevPipeline = device.createComputePipeline({
+//     layout: 'auto',
+//     compute: {
+//         module: syncPrevModule, 
+//         entryPoint: 'main' },
+// });
 
 // 4. solveReversePipeline - для обратного прохода ограничения длин
 const solveReversePipeline = device.createComputePipeline({
@@ -795,6 +990,12 @@ const solveReversePipeline = device.createComputePipeline({
     compute: { 
         module: solveReverseModule,
         entryPoint: 'solveConstraintsReverse' },
+});
+
+// 5. Нормали
+const computeNormalsPipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: computeNormalsModule, entryPoint: 'main' },
 });
 
 
@@ -823,15 +1024,15 @@ const solveBindGroup = device.createBindGroup({
     ],
 });
 
-// 3. Bind group для синхронизации
-const syncPrevBindGroup = device.createBindGroup({
-    layout: syncPrevPipeline.getBindGroupLayout(0),
-    entries: [
-        { binding: 0, resource: { buffer: vertexBuffer } },
-        { binding: 1, resource: { buffer: prevPosBuffer } },
-        { binding: 3, resource: { buffer: uniformBuffer } },
-    ],
-});
+// // 3. Bind group для синхронизации
+// const syncPrevBindGroup = device.createBindGroup({
+//     layout: syncPrevPipeline.getBindGroupLayout(0),
+//     entries: [
+//         { binding: 0, resource: { buffer: vertexBuffer } },
+//         { binding: 1, resource: { buffer: prevPosBuffer } },
+//         { binding: 3, resource: { buffer: uniformBuffer } },
+//     ],
+// });
 
 // 4. Bind group для обратного прохода
 const solveReverseBindGroup = device.createBindGroup({
@@ -844,11 +1045,21 @@ const solveReverseBindGroup = device.createBindGroup({
     ],
 });
 
-// bind group для рендера
+// 5. bind group для рендера
 const renderBindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
+    layout: trianglePipeline.getBindGroupLayout(0),
     entries: [
         { binding: 0, resource: { buffer: uniformBuffer } }
+    ]
+});
+
+// 5. bind group для вычисления нормалей
+const computeNormalsBindGroup = device.createBindGroup({
+    layout: computeNormalsPipeline.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: vertexBuffer } },
+        { binding: 1, resource: { buffer: normalBuffer } },
+        { binding: 2, resource: { buffer: triangleIndexBuffer } }
     ]
 });
 
@@ -919,12 +1130,19 @@ function frame() {
         computePass2.dispatchWorkgroups(edgeWorkgroupCount);
 
         // Обратный проход
-        // computePass2.setPipeline(solveReversePipeline);
-        // computePass2.setBindGroup(0, solveReverseBindGroup);
-        // computePass2.dispatchWorkgroups(edgeWorkgroupCount);
+        computePass2.setPipeline(solveReversePipeline);
+        computePass2.setBindGroup(0, solveReverseBindGroup);
+        computePass2.dispatchWorkgroups(edgeWorkgroupCount);
     }
 
     computePass2.end();
+
+    const computeNormalsPass = encoder.beginComputePass();
+    computeNormalsPass.setPipeline(computeNormalsPipeline);
+    computeNormalsPass.setBindGroup(0, computeNormalsBindGroup);
+    const triWorkgroupCount = Math.ceil(cloth.triangleIndices.length / 3 / 64);
+    computeNormalsPass.dispatchWorkgroups(triWorkgroupCount);
+    computeNormalsPass.end();
 
     // // ==============================================
     // // COMPUTE-ПРОХОД 3: Синхронизация prevPositions)
@@ -950,11 +1168,19 @@ function frame() {
         ],
     });
     
-    renderPass.setPipeline(pipeline);
+    // renderPass.setPipeline(pipeline);
+    // renderPass.setVertexBuffer(0, vertexBuffer);
+    // renderPass.setIndexBuffer(indexBuffer, 'uint32');
+    // renderPass.setBindGroup(0, renderBindGroup);
+    // renderPass.drawIndexed(cloth.indices.length);
+    // renderPass.end();
+
+    renderPass.setPipeline(trianglePipeline);
     renderPass.setVertexBuffer(0, vertexBuffer);
-    renderPass.setIndexBuffer(indexBuffer, 'uint32');
+    renderPass.setVertexBuffer(1, normalBuffer);
+    renderPass.setIndexBuffer(triangleIndexBuffer, 'uint32');
     renderPass.setBindGroup(0, renderBindGroup);
-    renderPass.drawIndexed(cloth.indices.length);
+    renderPass.drawIndexed(cloth.triangleIndices.length);
     renderPass.end();
     
     // Отправляем все команды на GPU
