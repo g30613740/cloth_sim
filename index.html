@@ -5,7 +5,6 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Симуляция ткани WebGPU</title>
 	<style>
-		/* убираем отступы, делаем фон тёмным, полотно во всю стр
 		body {
 			margin: 0;
 			background: #1a1a1a;
@@ -21,5 +20,13 @@
 <body>
 	<canvas id="canvas"></canvas>
 	<script type="module" src="main.js"></script>
+	
+	<!-- чекбокс включения гравитации -->
+	<div style="position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif;">
+    <label>
+        <input type="checkbox" id="gravityCheck">
+        Включить гравитацию
+    </label>
+</div>
 </body>
 </html>

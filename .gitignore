@@ -14,3 +14,5 @@ Thumbs.db
 # Node (на всякий случай)
 node_modules/
 package-lock.json
+
+.~lock.simple_cloth_simulation_GPU.docx#
