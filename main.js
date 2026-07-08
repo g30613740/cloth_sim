@@ -2,7 +2,6 @@
 // 1. Инициализация WebGPU
 // ============================================================
 async function initWebGPU() {
-	// проверка наличия объекта navigator.gpu
 	if (!navigator.gpu) {
 		alert('Browser does not support WebGPU');
 		return;
@@ -35,10 +34,8 @@ async function initWebGPU() {
 	return { device, context, format, canvas };
 }
 
-// запуск инициализации
 const gpu = await initWebGPU();
 if (!gpu) {
-	// останавливаемся, если что-то не так
 	throw new Error('GPU initialization does not work');
 }
 
@@ -48,8 +45,6 @@ const { device, context, format } = gpu;
 // 2. Генерация данных ткани (сетка NxN)
 // ============================================================
 function buildCloth(N, size) {
-    // N - количество сегментов по горизонтали и вертикали
-    // size - физический размер квадрата (например, 2.0)
     const vertices = []; // плоский список координат: [x0, y0, z0, x1, y1, z1, x2, y2, z2, ...]
     const indices = [];  // рёбра – пары индексов
 	const edgeData = []; // для симуляции: { i, j, restLength }
@@ -319,6 +314,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     
     let n = normalize(cross(p1 - p0, p2 - p0));
     
+    // flat shading
     normals[i0*3u] = n.x; normals[i0*3u+1u] = n.y; normals[i0*3u+2u] = n.z;
     normals[i1*3u] = n.x; normals[i1*3u+1u] = n.y; normals[i1*3u+2u] = n.z;
     normals[i2*3u] = n.x; normals[i2*3u+1u] = n.y; normals[i2*3u+2u] = n.z;
@@ -349,7 +345,7 @@ const trianglePipeline = device.createRenderPipeline({
 const linePipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex: {
-        module: vsLightModule,   // тот же вершинный шейдер, игнорируем нормали во фрагментном
+        module: vsLightModule,
         entryPoint: 'vs_main',
         buffers: [
             { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
@@ -395,11 +391,10 @@ struct Uniforms {
     canvasHeight: f32,
 };
 
-// === Verlet-интеграция
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
-    let i = id.x;                                   // индекс вершины из первой компоненты id
+    let i = id.x;  // индекс вершины из первой компоненты id
     
     // Проверка по количеству float'ов: каждая вершина занимает 3 числа
     if (i * 3u + 2u >= arrayLength(&vertices)) { return; }
@@ -420,7 +415,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // === 2. Центральная вершина обраб отдельно, движ по закону синуса ===
     if (i == u32(uniforms.center)) {
-        // Начальная позиция центра (хранится в prevPositions, т.к. мы её никогда не обновляем)
         let basePos = vec3<f32>(
             prevPositions[idx3],
             prevPositions[idx3 + 1u],
