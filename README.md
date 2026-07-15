@@ -4,7 +4,12 @@
 The cloth is a square grid of triangles, pinned at its four corners, with a central vertex oscillating vertically to create visible waves.  
 Gravity can be toggled via a checkbox, affecting all free vertices.</p>
 
-<img src="picture.png" alt="Cloth simulation screenshot" width="800"/>
+<div align="center">
+  <img src="disable_gravity.gif" alt="Cloth simulation (disabled gravity)" width="800"/>
+</div>
+<div align="center">
+  <img src="enable_gravity.gif" alt="Cloth simulation (enabled gravity)" width="800"/>
+</div>
 
 <h2>Features</h2>
 <ul>
