@@ -7,9 +7,7 @@ Gravity can be toggled via a checkbox, affecting all free vertices.</p>
 <div align="center">
   <img src="disable_gravity.gif" alt="Cloth simulation (disabled gravity)" width="800"/>
 </div>
-<div align="center">
-  <img src="enable_gravity.gif" alt="Cloth simulation (enabled gravity)" width="800"/>
-</div>
+You can see the cloth simulation (with disabled gravity) in the picture above. Also you can see visualization in https://g30613740.github.io/cloth_sim/.
 
 <h2>Features</h2>
 <ul>
